@@ -1,6 +1,6 @@
 # SwiftPipes
 
-A modern macOS SSH tunnel manager built with Swift and SwiftUI, designed as a replacement for the discontinued Secure Pipes app.
+A modern macOS SSH tunnel manager built with Swift and SwiftUI, designed as a replacement for the discontinued Secure Pipes app (https://www.opoet.com/pyro/).
 
 ## Features
 
@@ -47,7 +47,7 @@ xcodebuild test -project SwiftPipes.xcodeproj -scheme SwiftPipes -destination 'p
   - Codable encoding/decoding
   - Equatable and Identifiable conformance
   - Various configuration scenarios
-  
+
 - **SSHTunnelManagerTests**: Tests for the `SSHTunnelManager` class
   - Adding, updating, and deleting tunnels
   - Persistence across app restarts
@@ -136,8 +136,8 @@ Potential features for future versions:
 
 ## License
 
-This project is provided as-is for personal use.
+This project is licensed under the [MIT License](LICENSE).
 
 ## Credits
 
-Inspired by the discontinued Secure Pipes/Pyro application by opoet.
+Inspired by the discontinued Secure Pipes/Pyro application by [opoet](https://www.opoet.com/pyro/).
