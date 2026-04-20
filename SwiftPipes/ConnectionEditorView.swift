@@ -38,9 +38,19 @@ struct ConnectionEditorView: View {
                 }
                 
                 Section {
-                    Toggle("Automatically configure SOCKS proxy", isOn: $tunnel.autoConfigureProxy)
+                    Picker("SOCKS proxy mode", selection: $tunnel.proxyMode) {
+                        Text("Off").tag(ProxyMode.off)
+                        Text("Route all traffic").tag(ProxyMode.all)
+                        Text("Only selected domains / IPs").tag(ProxyMode.selective)
+                    }
+                    .pickerStyle(.menu)
+
+                    if tunnel.proxyMode == .selective {
+                        SelectiveHostsEditor(hosts: $tunnel.selectiveHosts)
+                    }
+
                     Toggle("Strict Host Key Checking", isOn: $tunnel.strictHostKeyChecking)
-                    
+
                     Toggle("Use SSH identity file", isOn: $tunnel.useIdentityFile)
                     
                     if tunnel.useIdentityFile {
@@ -107,12 +117,51 @@ struct ConnectionEditorView: View {
             .padding(.horizontal)
         }
         .padding()
-        .frame(width: 500, height: 600)
+        .frame(width: 500, height: 680)
     }
-    
+
     private func closeWindow() {
         if let window = NSApp.keyWindow {
             window.close()
+        }
+    }
+}
+
+private struct SelectiveHostsEditor: View {
+    @Binding var hosts: [String]
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text("Only these hosts go through the SOCKS proxy. Everything else goes DIRECT.")
+                .font(.caption)
+                .foregroundColor(.secondary)
+            Text("Examples: www.example.com · *.example.com · 10.0.0.5 · 192.168.1.0/24")
+                .font(.caption2)
+                .foregroundColor(.secondary)
+
+            VStack(spacing: 4) {
+                ForEach(hosts.indices, id: \.self) { idx in
+                    HStack {
+                        TextField("host, *.domain, IP, or CIDR", text: $hosts[idx])
+                            .textFieldStyle(.roundedBorder)
+                        Button {
+                            hosts.remove(at: idx)
+                        } label: {
+                            Image(systemName: "minus.circle.fill")
+                                .foregroundColor(.red)
+                        }
+                        .buttonStyle(.borderless)
+                        .help("Remove")
+                    }
+                }
+            }
+
+            Button {
+                hosts.append("")
+            } label: {
+                Label("Add host", systemImage: "plus.circle")
+            }
+            .buttonStyle(.borderless)
         }
     }
 }

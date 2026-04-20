@@ -16,7 +16,7 @@ final class SSHTunnelTests: XCTestCase {
             identityFilePath: "",
             strictHostKeyChecking: true
         )
-        
+
         XCTAssertEqual(tunnel.name, "Test Connection")
         XCTAssertEqual(tunnel.sshServer, "example.com")
         XCTAssertEqual(tunnel.port, 22)
@@ -28,10 +28,10 @@ final class SSHTunnelTests: XCTestCase {
         XCTAssertTrue(tunnel.strictHostKeyChecking)
         XCTAssertFalse(tunnel.isConnected)
     }
-    
+
     func testTunnelDefaultValues() {
         let tunnel = SSHTunnel()
-        
+
         XCTAssertEqual(tunnel.name, "")
         XCTAssertEqual(tunnel.sshServer, "")
         XCTAssertEqual(tunnel.port, 22)
@@ -39,12 +39,14 @@ final class SSHTunnelTests: XCTestCase {
         XCTAssertEqual(tunnel.localBindAddress, "localhost")
         XCTAssertEqual(tunnel.localPort, 8158)
         XCTAssertTrue(tunnel.autoConfigureProxy)
+        XCTAssertEqual(tunnel.proxyMode, .all)
+        XCTAssertTrue(tunnel.selectiveHosts.isEmpty)
         XCTAssertFalse(tunnel.useIdentityFile)
         XCTAssertEqual(tunnel.identityFilePath, "")
         XCTAssertTrue(tunnel.strictHostKeyChecking)
         XCTAssertFalse(tunnel.isConnected)
     }
-    
+
     func testTunnelCodable() throws {
         let originalTunnel = SSHTunnel(
             name: "Test Connection",
@@ -54,17 +56,19 @@ final class SSHTunnelTests: XCTestCase {
             localBindAddress: "127.0.0.1",
             localPort: 9999,
             autoConfigureProxy: false,
+            proxyMode: .selective,
+            selectiveHosts: ["www.example.com", "10.0.0.0/24"],
             useIdentityFile: true,
             identityFilePath: "/path/to/key",
             strictHostKeyChecking: false
         )
-        
+
         let encoder = JSONEncoder()
         let data = try encoder.encode(originalTunnel)
-        
+
         let decoder = JSONDecoder()
         let decodedTunnel = try decoder.decode(SSHTunnel.self, from: data)
-        
+
         XCTAssertEqual(decodedTunnel.name, originalTunnel.name)
         XCTAssertEqual(decodedTunnel.sshServer, originalTunnel.sshServer)
         XCTAssertEqual(decodedTunnel.port, originalTunnel.port)
@@ -72,6 +76,8 @@ final class SSHTunnelTests: XCTestCase {
         XCTAssertEqual(decodedTunnel.localBindAddress, originalTunnel.localBindAddress)
         XCTAssertEqual(decodedTunnel.localPort, originalTunnel.localPort)
         XCTAssertEqual(decodedTunnel.autoConfigureProxy, originalTunnel.autoConfigureProxy)
+        XCTAssertEqual(decodedTunnel.proxyMode, .selective)
+        XCTAssertEqual(decodedTunnel.selectiveHosts, originalTunnel.selectiveHosts)
         XCTAssertEqual(decodedTunnel.useIdentityFile, originalTunnel.useIdentityFile)
         XCTAssertEqual(decodedTunnel.identityFilePath, originalTunnel.identityFilePath)
         XCTAssertEqual(decodedTunnel.strictHostKeyChecking, originalTunnel.strictHostKeyChecking)
@@ -89,6 +95,31 @@ final class SSHTunnelTests: XCTestCase {
 
         XCTAssertTrue(KeychainHelper.shared.save("s3cret", forKey: key))
         XCTAssertEqual(KeychainHelper.shared.get(forKey: key), "s3cret")
+    }
+
+    func testMigrationFromLegacyAutoConfigureProxy() throws {
+        // Old saved tunnel JSON without proxyMode/selectiveHosts keys.
+        let legacy = """
+        {
+          "id": "00000000-0000-0000-0000-000000000001",
+          "name": "Legacy",
+          "sshServer": "example.com",
+          "port": 22,
+          "username": "u",
+          "localBindAddress": "localhost",
+          "localPort": 8158,
+          "autoConfigureProxy": true,
+          "useIdentityFile": false,
+          "identityFilePath": "",
+          "strictHostKeyChecking": true,
+          "serverAliveInterval": 30,
+          "isConnected": false
+        }
+        """.data(using: .utf8)!
+
+        let decoded = try JSONDecoder().decode(SSHTunnel.self, from: legacy)
+        XCTAssertEqual(decoded.proxyMode, .all)
+        XCTAssertTrue(decoded.selectiveHosts.isEmpty)
     }
     
     func testTunnelEquality() {

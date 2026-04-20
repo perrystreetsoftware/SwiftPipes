@@ -7,6 +7,12 @@ enum ConnectionState: Equatable, Hashable {
     case failed(String)
 }
 
+enum ProxyMode: String, Codable, CaseIterable, Hashable {
+    case off
+    case all
+    case selective
+}
+
 struct SSHTunnel: Identifiable, Codable, Equatable, Hashable {
     var id = UUID()
     var name: String
@@ -16,6 +22,8 @@ struct SSHTunnel: Identifiable, Codable, Equatable, Hashable {
     var localBindAddress: String
     var localPort: Int
     var autoConfigureProxy: Bool
+    var proxyMode: ProxyMode
+    var selectiveHosts: [String]
     var useIdentityFile: Bool
     var identityFilePath: String
     var strictHostKeyChecking: Bool
@@ -40,12 +48,6 @@ struct SSHTunnel: Identifiable, Codable, Equatable, Hashable {
         return "ssh-password-\(id.uuidString)"
     }
 
-    private enum CodingKeys: String, CodingKey {
-        case id, name, sshServer, port, username, localBindAddress, localPort,
-             autoConfigureProxy, useIdentityFile, identityFilePath,
-             strictHostKeyChecking, serverAliveInterval
-    }
-    
     init(
         name: String = "",
         sshServer: String = "",
@@ -54,6 +56,8 @@ struct SSHTunnel: Identifiable, Codable, Equatable, Hashable {
         localBindAddress: String = "localhost",
         localPort: Int = 8158,
         autoConfigureProxy: Bool = true,
+        proxyMode: ProxyMode = .all,
+        selectiveHosts: [String] = [],
         useIdentityFile: Bool = false,
         identityFilePath: String = "",
         strictHostKeyChecking: Bool = true,
@@ -66,9 +70,42 @@ struct SSHTunnel: Identifiable, Codable, Equatable, Hashable {
         self.localBindAddress = localBindAddress
         self.localPort = localPort
         self.autoConfigureProxy = autoConfigureProxy
+        self.proxyMode = proxyMode
+        self.selectiveHosts = selectiveHosts
         self.useIdentityFile = useIdentityFile
         self.identityFilePath = identityFilePath
         self.strictHostKeyChecking = strictHostKeyChecking
         self.serverAliveInterval = serverAliveInterval
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case id, name, sshServer, port, username, localBindAddress, localPort
+        case autoConfigureProxy, proxyMode, selectiveHosts
+        case useIdentityFile, identityFilePath, strictHostKeyChecking
+        case serverAliveInterval
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decodeIfPresent(UUID.self, forKey: .id) ?? UUID()
+        name = try c.decodeIfPresent(String.self, forKey: .name) ?? ""
+        sshServer = try c.decodeIfPresent(String.self, forKey: .sshServer) ?? ""
+        port = try c.decodeIfPresent(Int.self, forKey: .port) ?? 22
+        username = try c.decodeIfPresent(String.self, forKey: .username) ?? ""
+        localBindAddress = try c.decodeIfPresent(String.self, forKey: .localBindAddress) ?? "localhost"
+        localPort = try c.decodeIfPresent(Int.self, forKey: .localPort) ?? 8158
+        autoConfigureProxy = try c.decodeIfPresent(Bool.self, forKey: .autoConfigureProxy) ?? true
+        selectiveHosts = try c.decodeIfPresent([String].self, forKey: .selectiveHosts) ?? []
+        useIdentityFile = try c.decodeIfPresent(Bool.self, forKey: .useIdentityFile) ?? false
+        identityFilePath = try c.decodeIfPresent(String.self, forKey: .identityFilePath) ?? ""
+        strictHostKeyChecking = try c.decodeIfPresent(Bool.self, forKey: .strictHostKeyChecking) ?? true
+        serverAliveInterval = try c.decodeIfPresent(Int.self, forKey: .serverAliveInterval) ?? 30
+
+        if let mode = try c.decodeIfPresent(ProxyMode.self, forKey: .proxyMode) {
+            proxyMode = mode
+        } else {
+            // Migrate: pre-selective-proxy saves only had autoConfigureProxy.
+            proxyMode = autoConfigureProxy ? .all : .off
+        }
     }
 }

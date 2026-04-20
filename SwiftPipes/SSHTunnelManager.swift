@@ -9,8 +9,10 @@ class SSHTunnelManager: ObservableObject {
     
     private var processes: [UUID: Process] = [:]
     private let proxyManager = NetworkProxyManager()
-    
-    init() {
+    private let defaults: UserDefaults
+
+    init(userDefaults: UserDefaults = .standard) {
+        self.defaults = userDefaults
         loadTunnels()
         setupCleanupOnTermination()
         requestNotificationPermissions()
@@ -135,7 +137,21 @@ class SSHTunnelManager: ObservableObject {
     func connect(_ tunnelId: UUID) {
         guard let index = tunnels.firstIndex(where: { $0.id == tunnelId }) else { return }
         let tunnel = tunnels[index]
-        
+
+        // Single-connection policy: if any other tunnel is active, disconnect it first,
+        // then re-enter connect() after a short delay so the old process has time to
+        // release its local port and proxy config is fully torn down.
+        let others = tunnels.filter { $0.id != tunnelId && $0.isConnected }
+        if !others.isEmpty {
+            for other in others {
+                disconnect(other.id)
+            }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+                self.connect(tunnelId)
+            }
+            return
+        }
+
         // Check if port is already in use
         if isPortInUse(port: tunnel.localPort) {
             print("Port \(tunnel.localPort) is already in use. Cannot connect.")
@@ -239,9 +255,11 @@ class SSHTunnelManager: ObservableObject {
         var sawForwardListening = false
         var markedConnected = false
         let stderrHandle = stderrPipe.fileHandleForReading
-        let autoConfigureProxy = tunnel.autoConfigureProxy
+        let proxyMode = tunnel.proxyMode
+        let selectiveHosts = tunnel.selectiveHosts
         let bindHost = tunnel.localBindAddress
         let bindPort = tunnel.localPort
+        let tunnelName = tunnel.name
 
         stderrHandle.readabilityHandler = { [weak self] handle in
             let chunk = handle.availableData
@@ -265,11 +283,31 @@ class SSHTunnelManager: ObservableObject {
                     guard let idx = self.tunnels.firstIndex(where: { $0.id == tunnelId }) else { return }
                     // Only transition if we're still in the connecting state for this attempt
                     guard case .connecting = self.tunnels[idx].connectionState else { return }
+
+                    switch proxyMode {
+                    case .off:
+                        break
+                    case .all:
+                        self.proxyManager.enableSOCKSProxy(host: bindHost, port: bindPort)
+                    case .selective:
+                        let rules = selectiveHosts.compactMap { ProxyRule.parse($0) }
+                        let ok = self.proxyManager.enableSelectiveSOCKS(
+                            host: bindHost,
+                            port: bindPort,
+                            rules: rules
+                        )
+                        if !ok {
+                            self.showNotification(
+                                title: "Connection failed",
+                                body: "Could not start local PAC server for \(tunnelName). Disconnecting."
+                            )
+                            self.disconnect(tunnelId)
+                            return
+                        }
+                    }
+
                     self.tunnels[idx].connectionState = .connected
                     self.updateActiveConnectionStatus()
-                    if autoConfigureProxy {
-                        self.proxyManager.enableSOCKSProxy(host: bindHost, port: bindPort)
-                    }
                     self.showNotification(title: "Connected", body: "Connected to \(self.tunnels[idx].name)")
                 }
             }
@@ -295,8 +333,9 @@ class SSHTunnelManager: ObservableObject {
                 if wasConnected {
                     // Normal disconnect (process exited after being fully up)
                     self.tunnels[idx].connectionState = .disconnected
-                    if autoConfigureProxy {
-                        self.proxyManager.disableSOCKSProxy()
+                    if proxyMode != .off {
+                        // Clear both classic SOCKS and PAC autoproxy state defensively.
+                        self.proxyManager.disableAllProxyConfig()
                     }
                     self.showNotification(
                         title: "Disconnected",
@@ -358,8 +397,10 @@ class SSHTunnelManager: ObservableObject {
         // Only touch the system proxy if we actually had it enabled (i.e. we were
         // fully connected). Disabling on a failed/in-progress attempt is harmless
         // but we still skip the "Disconnected" notification for clarity.
-        if tunnel.autoConfigureProxy && wasConnected {
-            proxyManager.disableSOCKSProxy()
+        if wasConnected && tunnel.proxyMode != .off {
+            // Defensively clear both classic SOCKS and PAC autoproxy state so a mode
+            // change between sessions can't leave stale system-wide config behind.
+            proxyManager.disableAllProxyConfig()
         }
 
         if wasConnected {
@@ -373,12 +414,12 @@ class SSHTunnelManager: ObservableObject {
     
     private func saveTunnels() {
         if let data = try? JSONEncoder().encode(tunnels) {
-            UserDefaults.standard.set(data, forKey: "savedTunnels")
+            defaults.set(data, forKey: "savedTunnels")
         }
     }
-    
+
     private func loadTunnels() {
-        if let data = UserDefaults.standard.data(forKey: "savedTunnels"),
+        if let data = defaults.data(forKey: "savedTunnels"),
            let decoded = try? JSONDecoder().decode([SSHTunnel].self, from: data) {
             // connectionState is intentionally not persisted — always start disconnected.
             tunnels = decoded

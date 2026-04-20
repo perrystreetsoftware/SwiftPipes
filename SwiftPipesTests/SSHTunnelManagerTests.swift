@@ -4,20 +4,27 @@ import XCTest
 final class SSHTunnelManagerTests: XCTestCase {
     
     var manager: SSHTunnelManager!
-    
+    var testDefaults: UserDefaults!
+    var testSuiteName: String!
+
     override func setUp() {
         super.setUp()
-        manager = SSHTunnelManager()
-        UserDefaults.standard.removeObject(forKey: "savedTunnels")
+        // Use a throwaway UserDefaults suite per test so we never touch the app's
+        // real prefs domain (com.swiftpipes.app) when tests run on a developer machine.
+        testSuiteName = "com.swiftpipes.tests.\(UUID().uuidString)"
+        testDefaults = UserDefaults(suiteName: testSuiteName)
+        manager = SSHTunnelManager(userDefaults: testDefaults)
         manager.tunnels.removeAll()
     }
-    
+
     override func tearDown() {
         for tunnel in manager.tunnels where tunnel.isConnected {
             manager.disconnect(tunnel.id)
         }
-        UserDefaults.standard.removeObject(forKey: "savedTunnels")
+        testDefaults.removePersistentDomain(forName: testSuiteName)
         manager = nil
+        testDefaults = nil
+        testSuiteName = nil
         super.tearDown()
     }
     
@@ -111,7 +118,7 @@ final class SSHTunnelManagerTests: XCTestCase {
         manager.addTunnel(tunnel1)
         manager.addTunnel(tunnel2)
         
-        let newManager = SSHTunnelManager()
+        let newManager = SSHTunnelManager(userDefaults: testDefaults)
         
         XCTAssertEqual(newManager.tunnels.count, 2)
         XCTAssertEqual(newManager.tunnels[0].name, "Persistent 1")
@@ -182,14 +189,14 @@ final class SSHTunnelManagerTests: XCTestCase {
             identityFilePath: "/path/to/key",
             strictHostKeyChecking: false
         )
-        
+
         manager.addTunnel(tunnel)
-        
-        let newManager = SSHTunnelManager()
-        
+
+        let newManager = SSHTunnelManager(userDefaults: testDefaults)
+
         XCTAssertEqual(newManager.tunnels.count, 1)
         let loaded = newManager.tunnels[0]
-        
+
         XCTAssertEqual(loaded.name, "Complete Tunnel")
         XCTAssertEqual(loaded.sshServer, "example.com")
         XCTAssertEqual(loaded.port, 2222)
@@ -201,5 +208,131 @@ final class SSHTunnelManagerTests: XCTestCase {
         XCTAssertEqual(loaded.identityFilePath, "/path/to/key")
         XCTAssertEqual(loaded.strictHostKeyChecking, false)
         XCTAssertFalse(loaded.isConnected)
+    }
+}
+
+final class ProxyRuleTests: XCTestCase {
+
+    func testParseBareDomain() {
+        XCTAssertEqual(ProxyRule.parse("www.example.com"), .domain("www.example.com"))
+    }
+
+    func testParseWildcardDomain() {
+        XCTAssertEqual(ProxyRule.parse("*.example.com"), .domain("*.example.com"))
+    }
+
+    func testParseIPv4() {
+        XCTAssertEqual(ProxyRule.parse("10.0.0.5"), .ipv4("10.0.0.5"))
+    }
+
+    func testParseIPv4CIDR() {
+        XCTAssertEqual(
+            ProxyRule.parse("192.168.1.0/24"),
+            .ipv4CIDR(net: "192.168.1.0", mask: "255.255.255.0")
+        )
+    }
+
+    func testParseIPv4CIDRSlash16() {
+        XCTAssertEqual(
+            ProxyRule.parse("10.0.0.0/16"),
+            .ipv4CIDR(net: "10.0.0.0", mask: "255.255.0.0")
+        )
+    }
+
+    func testParseIPv4CIDRSlash32() {
+        XCTAssertEqual(
+            ProxyRule.parse("10.0.0.5/32"),
+            .ipv4CIDR(net: "10.0.0.5", mask: "255.255.255.255")
+        )
+    }
+
+    func testParseEmptyReturnsNil() {
+        XCTAssertNil(ProxyRule.parse(""))
+        XCTAssertNil(ProxyRule.parse("   "))
+    }
+
+    func testParseInvalidCIDRBitsReturnsNil() {
+        XCTAssertNil(ProxyRule.parse("10.0.0.0/33"))
+    }
+
+    func testTrimsWhitespace() {
+        XCTAssertEqual(ProxyRule.parse("  www.example.com  "), .domain("www.example.com"))
+    }
+}
+
+final class PACGeneratorTests: XCTestCase {
+
+    func testEmptyRulesYieldsDirectFallback() {
+        let pac = PACGenerator.makePAC(proxyHost: "127.0.0.1", proxyPort: 8158, rules: [])
+        XCTAssertTrue(pac.contains("function FindProxyForURL"))
+        XCTAssertTrue(pac.contains("return \"DIRECT\""))
+        XCTAssertFalse(pac.contains("shExpMatch"))
+        XCTAssertFalse(pac.contains("isInNet"))
+    }
+
+    func testDomainRuleEmitsShExpMatch() {
+        let pac = PACGenerator.makePAC(
+            proxyHost: "127.0.0.1",
+            proxyPort: 8158,
+            rules: [.domain("www.example.com")]
+        )
+        XCTAssertTrue(pac.contains("shExpMatch(host, \"www.example.com\")"))
+        XCTAssertTrue(pac.contains("SOCKS 127.0.0.1:8158"))
+        XCTAssertTrue(pac.contains("SOCKS5 127.0.0.1:8158"))
+    }
+
+    func testWildcardDomainPassesThrough() {
+        let pac = PACGenerator.makePAC(
+            proxyHost: "127.0.0.1",
+            proxyPort: 8158,
+            rules: [.domain("*.example.com")]
+        )
+        XCTAssertTrue(pac.contains("shExpMatch(host, \"*.example.com\")"))
+    }
+
+    func testIPv4RuleEmitsEqualityCheck() {
+        let pac = PACGenerator.makePAC(
+            proxyHost: "127.0.0.1",
+            proxyPort: 8158,
+            rules: [.ipv4("10.0.0.5")]
+        )
+        XCTAssertTrue(pac.contains("host == \"10.0.0.5\""))
+    }
+
+    func testCIDRRuleEmitsIsInNet() {
+        let pac = PACGenerator.makePAC(
+            proxyHost: "127.0.0.1",
+            proxyPort: 8158,
+            rules: [.ipv4CIDR(net: "192.168.1.0", mask: "255.255.255.0")]
+        )
+        XCTAssertTrue(pac.contains("isInNet(host, \"192.168.1.0\", \"255.255.255.0\")"))
+    }
+
+    func testMixedRulesAllAppear() {
+        let pac = PACGenerator.makePAC(
+            proxyHost: "127.0.0.1",
+            proxyPort: 1080,
+            rules: [
+                .domain("www.example.com"),
+                .domain("*.internal"),
+                .ipv4("8.8.8.8"),
+                .ipv4CIDR(net: "10.0.0.0", mask: "255.0.0.0")
+            ]
+        )
+        XCTAssertTrue(pac.contains("shExpMatch(host, \"www.example.com\")"))
+        XCTAssertTrue(pac.contains("shExpMatch(host, \"*.internal\")"))
+        XCTAssertTrue(pac.contains("host == \"8.8.8.8\""))
+        XCTAssertTrue(pac.contains("isInNet(host, \"10.0.0.0\", \"255.0.0.0\")"))
+        XCTAssertTrue(pac.contains("return \"DIRECT\""))
+    }
+
+    func testEscapesDoubleQuotesInDomain() {
+        // Defensive: a malformed rule shouldn't break out of the JS string literal.
+        let pac = PACGenerator.makePAC(
+            proxyHost: "127.0.0.1",
+            proxyPort: 8158,
+            rules: [.domain("bad\"host")]
+        )
+        XCTAssertTrue(pac.contains("shExpMatch(host, \"bad\\\"host\")"))
     }
 }
