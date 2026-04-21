@@ -3,7 +3,6 @@ import SystemConfiguration
 import Security
 
 class NetworkProxyManager {
-    private let keychainService = "com.swiftpipes.admin"
     private let keychainAccount = "admin-password"
     
     func enableSOCKSProxy(host: String, port: Int) {
