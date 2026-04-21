@@ -16,6 +16,7 @@
 		A10000001A00000000000000D /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = A10000001A00000000000000E /* Assets.xcassets */; };
 		A10000001A000000000000020 /* SSHTunnelTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000001A000000000000021 /* SSHTunnelTests.swift */; };
 		A10000001A000000000000022 /* SSHTunnelManagerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000001A000000000000023 /* SSHTunnelManagerTests.swift */; };
+		A10000001A000000000000044 /* DuplicateTunnelTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000001A000000000000045 /* DuplicateTunnelTests.swift */; };
 		A10000001A000000000000024 /* SSHTunnel.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000001A000000000000004 /* SSHTunnel.swift */; };
 		A10000001A000000000000025 /* SSHTunnelManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000001A000000000000006 /* SSHTunnelManager.swift */; };
 		A10000001A000000000000026 /* NetworkProxyManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000001A000000000000008 /* NetworkProxyManager.swift */; };
@@ -51,6 +52,7 @@
 		A10000001A000000000000011 /* SwiftPipes.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = SwiftPipes.entitlements; sourceTree = "<group>"; };
 		A10000001A000000000000021 /* SSHTunnelTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SSHTunnelTests.swift; sourceTree = "<group>"; };
 		A10000001A000000000000023 /* SSHTunnelManagerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SSHTunnelManagerTests.swift; sourceTree = "<group>"; };
+		A10000001A000000000000045 /* DuplicateTunnelTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DuplicateTunnelTests.swift; sourceTree = "<group>"; };
 		A10000001A000000000000027 /* SwiftPipesTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = SwiftPipesTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		A10000001A000000000000033 /* ManageConnectionsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ManageConnectionsView.swift; sourceTree = "<group>"; };
 		A10000001A000000000000035 /* KeychainHelper.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeychainHelper.swift; sourceTree = "<group>"; };
@@ -121,6 +123,7 @@
 				A10000001A000000000000021 /* SSHTunnelTests.swift */,
 				A10000001A000000000000023 /* SSHTunnelManagerTests.swift */,
 				A10000001A000000000000041 /* ConnectionStateTests.swift */,
+				A10000001A000000000000045 /* DuplicateTunnelTests.swift */,
 			);
 			path = SwiftPipesTests;
 			sourceTree = "<group>";
@@ -240,6 +243,7 @@
 				A10000001A000000000000020 /* SSHTunnelTests.swift in Sources */,
 				A10000001A000000000000022 /* SSHTunnelManagerTests.swift in Sources */,
 				A10000001A000000000000040 /* ConnectionStateTests.swift in Sources */,
+				A10000001A000000000000044 /* DuplicateTunnelTests.swift in Sources */,
 				A10000001A000000000000024 /* SSHTunnel.swift in Sources */,
 				A10000001A000000000000025 /* SSHTunnelManager.swift in Sources */,
 				A10000001A000000000000026 /* NetworkProxyManager.swift in Sources */,

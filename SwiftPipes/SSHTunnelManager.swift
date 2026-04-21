@@ -121,6 +121,45 @@ class SSHTunnelManager: ObservableObject {
         tunnels.removeAll { $0.id == tunnel.id }
         saveTunnels()
     }
+
+    /// Duplicates a tunnel, producing an independent copy with a fresh id, a
+    /// disambiguated name, and — if the source had a stored password — a copy
+    /// of that password keyed to the new tunnel's keychain entry. The duplicate
+    /// is inserted immediately after the source in the list and is returned.
+    @discardableResult
+    func duplicateTunnel(_ tunnel: SSHTunnel) -> SSHTunnel {
+        var copy = tunnel
+        copy.id = UUID()
+        copy.name = uniqueDuplicateName(basedOn: tunnel.name)
+        copy.connectionState = .disconnected
+
+        // Copy password in the keychain, if present. Best-effort: failure to
+        // copy just means the user re-enters it in the editor.
+        if let password = KeychainHelper.shared.get(forKey: tunnel.passwordKeychainKey),
+           !password.isEmpty {
+            _ = KeychainHelper.shared.save(password, forKey: copy.passwordKeychainKey)
+        }
+
+        if let sourceIdx = tunnels.firstIndex(where: { $0.id == tunnel.id }) {
+            tunnels.insert(copy, at: sourceIdx + 1)
+        } else {
+            tunnels.append(copy)
+        }
+        saveTunnels()
+        return copy
+    }
+
+    /// Picks a name like "Foo Copy", "Foo Copy 2", ... that doesn't collide
+    /// with any existing tunnel name.
+    private func uniqueDuplicateName(basedOn name: String) -> String {
+        let base = name.isEmpty ? "Connection" : name
+        let existing = Set(tunnels.map { $0.name })
+        let firstCandidate = "\(base) Copy"
+        if !existing.contains(firstCandidate) { return firstCandidate }
+        var n = 2
+        while existing.contains("\(base) Copy \(n)") { n += 1 }
+        return "\(base) Copy \(n)"
+    }
     
     func toggleConnection(_ tunnelId: UUID) {
         if let index = tunnels.firstIndex(where: { $0.id == tunnelId }) {
