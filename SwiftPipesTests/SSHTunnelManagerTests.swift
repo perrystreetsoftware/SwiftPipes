@@ -125,13 +125,13 @@ final class SSHTunnelManagerTests: XCTestCase {
     func testHasActiveConnection() {
         XCTAssertFalse(manager.hasActiveConnection)
         
-        var tunnel = SSHTunnel(name: "Test", sshServer: "example.com", username: "user")
+        let tunnel = SSHTunnel(name: "Test", sshServer: "example.com", username: "user")
         manager.addTunnel(tunnel)
         
         XCTAssertFalse(manager.hasActiveConnection)
         
         if let index = manager.tunnels.firstIndex(where: { $0.id == tunnel.id }) {
-            manager.tunnels[index].isConnected = true
+            manager.tunnels[index].connectionState = .connected
         }
         
         XCTAssertTrue(manager.hasActiveConnection)
@@ -146,7 +146,7 @@ final class SSHTunnelManagerTests: XCTestCase {
         XCTAssertFalse(manager.hasActiveConnections)
         
         if let index = manager.tunnels.firstIndex(where: { $0.id == tunnel.id }) {
-            manager.tunnels[index].isConnected = true
+            manager.tunnels[index].connectionState = .connected
         }
         
         manager.hasActiveConnections = manager.tunnels.contains { $0.isConnected }
@@ -175,7 +175,6 @@ final class SSHTunnelManagerTests: XCTestCase {
             sshServer: "example.com",
             port: 2222,
             username: "testuser",
-            password: "testpass",
             localBindAddress: "127.0.0.1",
             localPort: 9999,
             autoConfigureProxy: false,
@@ -195,7 +194,6 @@ final class SSHTunnelManagerTests: XCTestCase {
         XCTAssertEqual(loaded.sshServer, "example.com")
         XCTAssertEqual(loaded.port, 2222)
         XCTAssertEqual(loaded.username, "testuser")
-        XCTAssertEqual(loaded.password, "testpass")
         XCTAssertEqual(loaded.localBindAddress, "127.0.0.1")
         XCTAssertEqual(loaded.localPort, 9999)
         XCTAssertEqual(loaded.autoConfigureProxy, false)

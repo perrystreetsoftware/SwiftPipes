@@ -51,8 +51,21 @@ struct ConnectionEditorView: View {
                                 panel.allowsMultipleSelection = false
                                 panel.canChooseDirectories = false
                                 panel.canChooseFiles = true
+                                panel.showsHiddenFiles = true
+                                panel.treatsFilePackagesAsDirectories = true
                                 panel.message = "Select SSH identity file"
-                                
+
+                                // Default to the current identity file's directory if set,
+                                // otherwise open ~/.ssh (creating that directory shortcut
+                                // is not necessary — NSOpenPanel just falls back if missing).
+                                let sshDir = (NSString(string: "~/.ssh").expandingTildeInPath as String)
+                                if !tunnel.identityFilePath.isEmpty {
+                                    let expanded = NSString(string: tunnel.identityFilePath).expandingTildeInPath
+                                    panel.directoryURL = URL(fileURLWithPath: expanded).deletingLastPathComponent()
+                                } else if FileManager.default.fileExists(atPath: sshDir) {
+                                    panel.directoryURL = URL(fileURLWithPath: sshDir)
+                                }
+
                                 if panel.runModal() == .OK, let url = panel.url {
                                     tunnel.identityFilePath = url.path
                                 }
