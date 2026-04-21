@@ -12,9 +12,10 @@ if [[ ! -d "$APP_PATH" ]]; then
   echo "Error: '$APP_PATH' not found or is not a directory." >&2
   exit 1
 fi
+APP_PATH="$(cd "$(dirname "$APP_PATH")" && pwd)/$(basename "$APP_PATH")"
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-PROJECT="$SCRIPT_DIR/SwiftPipes.xcodeproj"
+PROJECT="$(dirname "$SCRIPT_DIR")/SwiftPipes.xcodeproj"
 
 VERSION=$(xcodebuild -project "$PROJECT" -scheme SwiftPipes -showBuildSettings 2>/dev/null \
   | awk '/MARKETING_VERSION =/ { print $3; exit }')
