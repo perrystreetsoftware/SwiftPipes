@@ -4,8 +4,11 @@ import LocalAuthentication
 
 class KeychainHelper {
     static let shared = KeychainHelper()
+    private let serviceIdentifier: String
     
-    private init() {}
+    private init() {
+        serviceIdentifier = Bundle.main.bundleIdentifier ?? "com.perrystreet.swiftpipes"
+    }
     
     func save(_ value: String, forKey key: String) -> Bool {
         guard let data = value.data(using: .utf8) else { 
@@ -18,7 +21,7 @@ class KeychainHelper {
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrAccount as String: key,
-            kSecAttrService as String: "com.swiftpipes.app",
+            kSecAttrService as String: serviceIdentifier,
             kSecValueData as String: data,
             kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlock,
             kSecAttrSynchronizable as String: false
@@ -32,7 +35,7 @@ class KeychainHelper {
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrAccount as String: key,
-            kSecAttrService as String: "com.swiftpipes.app",
+            kSecAttrService as String: serviceIdentifier,
             kSecReturnData as String: true,
             kSecMatchLimit as String: kSecMatchLimitOne,
             kSecAttrSynchronizable as String: false
@@ -52,7 +55,7 @@ class KeychainHelper {
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrAccount as String: key,
-            kSecAttrService as String: "com.swiftpipes.app"
+            kSecAttrService as String: serviceIdentifier
         ]
         
         let status = SecItemDelete(query as CFDictionary)
