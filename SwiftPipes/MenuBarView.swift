@@ -16,9 +16,20 @@ struct MenuBarView: View {
                         tunnelManager.toggleConnection(tunnel.id)
                     }) {
                         HStack {
-                            Image(systemName: tunnel.isConnected ? "checkmark.circle.fill" : "circle")
-                                .foregroundColor(tunnel.isConnected ? .green : .secondary)
-                            Text(tunnel.name)
+                            statusIcon(for: tunnel.connectionState)
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(tunnel.name)
+                                if case .failed(let reason) = tunnel.connectionState {
+                                    Text(reason)
+                                        .font(.caption2)
+                                        .foregroundColor(.secondary)
+                                        .lineLimit(2)
+                                } else if case .connecting = tunnel.connectionState {
+                                    Text("Connecting…")
+                                        .font(.caption2)
+                                        .foregroundColor(.secondary)
+                                }
+                            }
                             Spacer()
                         }
                         .contentShape(Rectangle())
@@ -60,6 +71,24 @@ struct MenuBarView: View {
             .padding(.vertical, 4)
         }
         .frame(minWidth: 250)
+    }
+
+    @ViewBuilder
+    private func statusIcon(for state: ConnectionState) -> some View {
+        switch state {
+        case .connected:
+            Image(systemName: "checkmark.circle.fill")
+                .foregroundColor(.green)
+        case .connecting:
+            Image(systemName: "arrow.triangle.2.circlepath.circle.fill")
+                .foregroundColor(.yellow)
+        case .failed:
+            Image(systemName: "exclamationmark.circle.fill")
+                .foregroundColor(.red)
+        case .disconnected:
+            Image(systemName: "circle")
+                .foregroundColor(.secondary)
+        }
     }
     
     private func showConnectionEditor(for tunnel: SSHTunnel) {

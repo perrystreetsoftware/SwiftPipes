@@ -9,7 +9,6 @@ final class SSHTunnelTests: XCTestCase {
             sshServer: "example.com",
             port: 22,
             username: "testuser",
-            password: "testpass",
             localBindAddress: "localhost",
             localPort: 8158,
             autoConfigureProxy: true,
@@ -22,7 +21,6 @@ final class SSHTunnelTests: XCTestCase {
         XCTAssertEqual(tunnel.sshServer, "example.com")
         XCTAssertEqual(tunnel.port, 22)
         XCTAssertEqual(tunnel.username, "testuser")
-        XCTAssertEqual(tunnel.password, "testpass")
         XCTAssertEqual(tunnel.localBindAddress, "localhost")
         XCTAssertEqual(tunnel.localPort, 8158)
         XCTAssertTrue(tunnel.autoConfigureProxy)
@@ -38,7 +36,6 @@ final class SSHTunnelTests: XCTestCase {
         XCTAssertEqual(tunnel.sshServer, "")
         XCTAssertEqual(tunnel.port, 22)
         XCTAssertEqual(tunnel.username, "")
-        XCTAssertEqual(tunnel.password, "")
         XCTAssertEqual(tunnel.localBindAddress, "localhost")
         XCTAssertEqual(tunnel.localPort, 8158)
         XCTAssertTrue(tunnel.autoConfigureProxy)
@@ -54,7 +51,6 @@ final class SSHTunnelTests: XCTestCase {
             sshServer: "example.com",
             port: 2222,
             username: "testuser",
-            password: "testpass",
             localBindAddress: "127.0.0.1",
             localPort: 9999,
             autoConfigureProxy: false,
@@ -73,13 +69,26 @@ final class SSHTunnelTests: XCTestCase {
         XCTAssertEqual(decodedTunnel.sshServer, originalTunnel.sshServer)
         XCTAssertEqual(decodedTunnel.port, originalTunnel.port)
         XCTAssertEqual(decodedTunnel.username, originalTunnel.username)
-        XCTAssertEqual(decodedTunnel.password, originalTunnel.password)
         XCTAssertEqual(decodedTunnel.localBindAddress, originalTunnel.localBindAddress)
         XCTAssertEqual(decodedTunnel.localPort, originalTunnel.localPort)
         XCTAssertEqual(decodedTunnel.autoConfigureProxy, originalTunnel.autoConfigureProxy)
         XCTAssertEqual(decodedTunnel.useIdentityFile, originalTunnel.useIdentityFile)
         XCTAssertEqual(decodedTunnel.identityFilePath, originalTunnel.identityFilePath)
         XCTAssertEqual(decodedTunnel.strictHostKeyChecking, originalTunnel.strictHostKeyChecking)
+    }
+
+    func testPasswordKeychainRoundTrip() {
+        // Passwords are no longer stored on the struct — they live in the Keychain
+        // under a per-tunnel key. Verify the round-trip and that the key is stable.
+        let tunnel = SSHTunnel(name: "KC", sshServer: "example.com", username: "u")
+        let key = tunnel.passwordKeychainKey
+        XCTAssertTrue(key.hasPrefix("ssh-password-"))
+
+        _ = KeychainHelper.shared.delete(forKey: key)
+        defer { _ = KeychainHelper.shared.delete(forKey: key) }
+
+        XCTAssertTrue(KeychainHelper.shared.save("s3cret", forKey: key))
+        XCTAssertEqual(KeychainHelper.shared.get(forKey: key), "s3cret")
     }
     
     func testTunnelEquality() {
@@ -115,7 +124,6 @@ final class SSHTunnelTests: XCTestCase {
         
         XCTAssertTrue(tunnel.useIdentityFile)
         XCTAssertEqual(tunnel.identityFilePath, "~/.ssh/id_rsa")
-        XCTAssertEqual(tunnel.password, "")
     }
     
     func testTunnelCustomPort() {

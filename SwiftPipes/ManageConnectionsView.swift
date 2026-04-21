@@ -22,23 +22,33 @@ struct ManageConnectionsView: View {
                 List(tunnelManager.tunnels, id: \.id, selection: $selectedTunnel) { tunnel in
                     HStack {
                         Image(systemName: "circle.fill")
-                            .foregroundColor(tunnel.isConnected ? .green : .red)
+                            .foregroundColor(statusColor(for: tunnel.connectionState))
                             .font(.system(size: 10))
-                        
+
                         VStack(alignment: .leading, spacing: 4) {
                             Text(tunnel.name)
                                 .font(.headline)
                             Text("\(tunnel.username)@\(tunnel.sshServer):\(String(tunnel.port))")
                                 .font(.caption)
                                 .foregroundColor(.secondary)
+                            if case .failed(let reason) = tunnel.connectionState {
+                                Text(reason)
+                                    .font(.caption)
+                                    .foregroundColor(.red)
+                                    .lineLimit(2)
+                            } else if case .connecting = tunnel.connectionState {
+                                Text("Connecting…")
+                                    .font(.caption)
+                                    .foregroundColor(.orange)
+                            }
                         }
-                        
+
                         Spacer()
                     }
                     .padding(.vertical, 4)
                     .contentShape(Rectangle())
                     .contextMenu {
-                        if tunnel.isConnected {
+                        if tunnel.isConnected || tunnel.isConnecting {
                             Button("Disconnect") {
                                 tunnelManager.disconnect(tunnel.id)
                             }
@@ -128,6 +138,15 @@ struct ManageConnectionsView: View {
     private func closeWindow() {
         if let window = NSApp.keyWindow {
             window.close()
+        }
+    }
+
+    private func statusColor(for state: ConnectionState) -> Color {
+        switch state {
+        case .connected: return .green
+        case .connecting: return .orange
+        case .failed: return .red
+        case .disconnected: return .gray
         }
     }
 }
