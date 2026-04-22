@@ -63,6 +63,11 @@ struct ManageConnectionsView: View {
                         Button("Edit...") {
                             showConnectionEditor(for: tunnel)
                         }
+
+                        Button("Duplicate") {
+                            let copy = tunnelManager.duplicateTunnel(tunnel)
+                            selectedTunnel = copy
+                        }
                         
                         Button("Delete", role: .destructive) {
                             tunnelManager.deleteTunnel(tunnel)
@@ -91,6 +96,16 @@ struct ManageConnectionsView: View {
                 }
                 .disabled(selectedTunnel == nil)
                 .help("Edit Connection")
+
+                Button(action: {
+                    if let tunnel = selectedTunnel {
+                        selectedTunnel = tunnelManager.duplicateTunnel(tunnel)
+                    }
+                }) {
+                    Image(systemName: "plus.square.on.square")
+                }
+                .disabled(selectedTunnel == nil)
+                .help("Duplicate Connection")
                 
                 Button(action: {
                     if let tunnel = selectedTunnel {
