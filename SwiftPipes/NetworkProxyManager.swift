@@ -199,10 +199,15 @@ class NetworkProxyManager {
         let services = getNetworkServices()
         print("Enabling SOCKS proxy for services: \(services)")
 
+        // host comes from tunnel.localBindAddress (free-form user input) and is
+        // embedded into a single-quoted argument inside `sudo -S sh -c '...'`.
+        // Without escaping, a value like `x'; cmd; #` would break out and run
+        // `cmd` as root.
+        let escapedHost = shellEscape(host)
         var commands: [String] = []
         for service in services {
             let escaped = shellEscape(service)
-            commands.append("/usr/sbin/networksetup -setsocksfirewallproxy '\(escaped)' '\(host)' '\(port)'")
+            commands.append("/usr/sbin/networksetup -setsocksfirewallproxy '\(escaped)' '\(escapedHost)' '\(port)'")
             commands.append("/usr/sbin/networksetup -setsocksfirewallproxystate '\(escaped)' on")
         }
 
