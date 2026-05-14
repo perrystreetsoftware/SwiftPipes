@@ -10,6 +10,23 @@ import XCTest
 ///   - summarizeSSHFailure maps common ssh(1) stderr patterns to user-meaningful text.
 final class ConnectionStateTests: XCTestCase {
 
+    private var testDefaults: UserDefaults!
+    private var testSuiteName: String!
+
+    override func setUp() {
+        super.setUp()
+        // Per-test UserDefaults suite: never clobber the real app's savedTunnels.
+        testSuiteName = "com.swiftpipes.tests.\(UUID().uuidString)"
+        testDefaults = UserDefaults(suiteName: testSuiteName)
+    }
+
+    override func tearDown() {
+        testDefaults.removePersistentDomain(forName: testSuiteName)
+        testDefaults = nil
+        testSuiteName = nil
+        super.tearDown()
+    }
+
     // MARK: - ConnectionState / SSHTunnel invariants
 
     func testNewTunnelStartsDisconnected() {
@@ -48,10 +65,7 @@ final class ConnectionStateTests: XCTestCase {
     // MARK: - Persistence: connectionState must not be saved
 
     func testConnectionStateIsNotPersisted() {
-        UserDefaults.standard.removeObject(forKey: "savedTunnels")
-        defer { UserDefaults.standard.removeObject(forKey: "savedTunnels") }
-
-        let manager = SSHTunnelManager()
+        let manager = SSHTunnelManager(userDefaults: testDefaults)
         manager.tunnels.removeAll()
 
         let tunnel = SSHTunnel(name: "t", sshServer: "s", username: "u")
@@ -61,14 +75,11 @@ final class ConnectionStateTests: XCTestCase {
         if let idx = manager.tunnels.firstIndex(where: { $0.id == tunnel.id }) {
             manager.tunnels[idx].connectionState = .connected
         }
-        // Re-save so the "connected" state would be persisted if it were encodable.
-        manager.tunnels = manager.tunnels // no-op, but trigger nothing special
-        // addTunnel already called saveTunnels() above, which is what persists. The
-        // key is: even if connectionState were encoded, loadTunnels should reset it.
-        // Force a save by re-adding via updateTunnel path:
+        // Force a save via updateTunnel so connectionState would be persisted
+        // if it were encodable.
         manager.updateTunnel(manager.tunnels[0])
 
-        let reloaded = SSHTunnelManager()
+        let reloaded = SSHTunnelManager(userDefaults: testDefaults)
         XCTAssertEqual(reloaded.tunnels.count, 1)
         XCTAssertEqual(reloaded.tunnels[0].connectionState, .disconnected,
                        "restored tunnels must never come back as connected")
@@ -142,10 +153,7 @@ final class ConnectionStateTests: XCTestCase {
     // MARK: - Manager behavior
 
     func testConnectFailsWhenLocalPortInUseDoesNotShowAsConnected() {
-        UserDefaults.standard.removeObject(forKey: "savedTunnels")
-        defer { UserDefaults.standard.removeObject(forKey: "savedTunnels") }
-
-        let manager = SSHTunnelManager()
+        let manager = SSHTunnelManager(userDefaults: testDefaults)
         manager.tunnels.removeAll()
 
         // Occupy a port locally.
@@ -167,11 +175,157 @@ final class ConnectionStateTests: XCTestCase {
         XCTAssertFalse(manager.tunnels[0].isConnected,
                        "must not show green light when local port is already in use")
         XCTAssertFalse(manager.hasActiveConnections)
-        if case .failed = manager.tunnels[0].connectionState {
-            // ok
+        if case .failed(let reason) = manager.tunnels[0].connectionState {
+            // The reason should always reference the busy port.
+            XCTAssertTrue(reason.contains("Local port \(listener.port)"),
+                          "reason should reference the busy port number, got: \(reason)")
+            XCTAssertTrue(reason.contains("already in use"),
+                          "reason should say the port is already in use, got: \(reason)")
         } else {
             XCTFail("expected .failed, got \(manager.tunnels[0].connectionState)")
         }
+    }
+
+    // MARK: - lsofListener / describePortHolder
+
+    func testLsofListenerIdentifiesListener() throws {
+        let listener = makeListeningSocket()
+        defer { close(listener.fd) }
+
+        // The test process itself is holding the port. lsof should find it.
+        guard let holder = SSHTunnelManager.lsofListener(port: listener.port) else {
+            throw XCTSkip("lsof unavailable or returned no rows for the test-held port")
+        }
+        XCTAssertGreaterThan(holder.pid, 0)
+        XCTAssertFalse(holder.command.isEmpty,
+                       "command name should not be empty (got pid \(holder.pid))")
+    }
+
+    func testDescribePortHolderClassifiesTestProcessAsForeign() throws {
+        let listener = makeListeningSocket()
+        defer { close(listener.fd) }
+
+        // The test runner isn't a SwiftPipes-spawned ssh process, so the
+        // classifier should land on `.foreign`.
+        let manager = SSHTunnelManager(userDefaults: testDefaults)
+        guard let holder = manager.describePortHolder(port: listener.port) else {
+            throw XCTSkip("lsof unavailable")
+        }
+        switch holder {
+        case .foreign:
+            break // expected
+        case .ours, .orphanedSwiftPipes:
+            XCTFail("expected .foreign, got \(holder)")
+        }
+    }
+
+    func testLsofListenerReturnsNilForFreePort() {
+        // Pick an unlikely-bound high port. Tiny race risk but the function
+        // should still return a well-formed value either way.
+        _ = SSHTunnelManager.lsofListener(port: 59999)
+    }
+
+    // MARK: - Host key prompt parsing
+
+    func testParseHostKeyChangeReturnsNilForNonHostKeyStderr() {
+        let stderr = "Permission denied (publickey,password)."
+        let prompt = SSHTunnelManager.parseHostKeyChange(
+            stderr: stderr,
+            tunnelId: UUID(),
+            host: "example.com",
+            port: 22
+        )
+        XCTAssertNil(prompt)
+    }
+
+    func testParseHostKeyChangeExtractsFingerprintAndType() {
+        let stderr = """
+        debug1: Connecting to example.com port 22.
+        debug1: Connection established.
+        debug1: Server host key: ssh-ed25519 SHA256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
+        @@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@
+        @    WARNING: REMOTE HOST IDENTIFICATION HAS CHANGED!     @
+        @@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@
+        Offending ED25519 key in /Users/foo/.ssh/known_hosts:42
+        Host key for example.com has changed and you have requested strict checking.
+        Host key verification failed.
+        """
+        let tunnelId = UUID()
+        let prompt = SSHTunnelManager.parseHostKeyChange(
+            stderr: stderr,
+            tunnelId: tunnelId,
+            host: "example.com",
+            port: 22
+        )
+        XCTAssertNotNil(prompt)
+        XCTAssertEqual(prompt?.tunnelId, tunnelId)
+        XCTAssertEqual(prompt?.host, "example.com")
+        XCTAssertEqual(prompt?.port, 22)
+        XCTAssertEqual(prompt?.keyType, "ED25519")
+        XCTAssertEqual(prompt?.newFingerprint, "SHA256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA")
+        XCTAssertEqual(prompt?.knownHostsPath, "/Users/foo/.ssh/known_hosts")
+    }
+
+    func testParseHostKeyChangeRSA() {
+        let stderr = """
+        debug1: Server host key: ssh-rsa SHA256:BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB
+        Host key verification failed.
+        """
+        let prompt = SSHTunnelManager.parseHostKeyChange(
+            stderr: stderr,
+            tunnelId: UUID(),
+            host: "host",
+            port: 2222
+        )
+        XCTAssertEqual(prompt?.keyType, "RSA")
+        XCTAssertEqual(prompt?.newFingerprint, "SHA256:BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB")
+    }
+
+    func testParseHostKeyChangeWithoutOffendingLineStillReturnsPrompt() {
+        let stderr = """
+        debug1: Server host key: ecdsa-sha2-nistp256 SHA256:CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC
+        Host key verification failed.
+        """
+        let prompt = SSHTunnelManager.parseHostKeyChange(
+            stderr: stderr,
+            tunnelId: UUID(),
+            host: "host",
+            port: 22
+        )
+        XCTAssertNotNil(prompt)
+        XCTAssertEqual(prompt?.keyType, "ECDSA")
+        XCTAssertNil(prompt?.knownHostsPath)
+    }
+
+    // MARK: - SwiftPipes ssh argv signature matcher
+
+    func testIsSwiftPipesSshArgvMatchesRealCommand() {
+        // Captured from a real orphaned SwiftPipes ssh (PID 89968 in the
+        // bug repro):
+        let cmd = "/usr/bin/ssh -v -D localhost:8158 -N -p 32722 -o ConnectTimeout=10 -o ExitOnForwardFailure=yes -o StrictHostKeyChecking=accept-new -i /Users/pss/.ssh/id_rsa_scruff -o ServerAliveInterval=30 -o ServerAliveCountMax=3 bastian@vpn3.scruffapp.com"
+        XCTAssertTrue(SSHTunnelManager.isSwiftPipesSshArgv(cmd))
+    }
+
+    func testIsSwiftPipesSshArgvRejectsPlainSsh() {
+        XCTAssertFalse(SSHTunnelManager.isSwiftPipesSshArgv("/usr/bin/ssh user@host"))
+    }
+
+    func testIsSwiftPipesSshArgvRejectsLocalForward() {
+        // -L is local forward, NOT what SwiftPipes spawns.
+        let cmd = "/usr/bin/ssh -L 8080:localhost:80 -N user@host"
+        XCTAssertFalse(SSHTunnelManager.isSwiftPipesSshArgv(cmd))
+    }
+
+    func testIsSwiftPipesSshArgvRejectsNonSystemSsh() {
+        // A homebrew/manually-installed ssh wouldn't be at /usr/bin.
+        let cmd = "/opt/homebrew/bin/ssh -v -D localhost:8158 -N -p 22 -o ConnectTimeout=10 -o ExitOnForwardFailure=yes user@host"
+        XCTAssertFalse(SSHTunnelManager.isSwiftPipesSshArgv(cmd))
+    }
+
+    func testIsSwiftPipesSshArgvRejectsMissingFlag() {
+        // Missing ExitOnForwardFailure — could be a different tool's invocation.
+        let cmd = "/usr/bin/ssh -v -D localhost:8158 -N -p 22 -o ConnectTimeout=10 user@host"
+        XCTAssertFalse(SSHTunnelManager.isSwiftPipesSshArgv(cmd))
     }
 
     // MARK: - Helpers

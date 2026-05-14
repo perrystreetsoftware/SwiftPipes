@@ -4,11 +4,16 @@ import XCTest
 final class DuplicateTunnelTests: XCTestCase {
 
     var manager: SSHTunnelManager!
+    var testDefaults: UserDefaults!
+    var testSuiteName: String!
 
     override func setUp() {
         super.setUp()
-        UserDefaults.standard.removeObject(forKey: "savedTunnels")
-        manager = SSHTunnelManager()
+        // Per-test throwaway UserDefaults suite so we NEVER touch the real app
+        // prefs domain (com.perrystreet.swiftpipes) when running on a dev machine.
+        testSuiteName = "com.swiftpipes.tests.\(UUID().uuidString)"
+        testDefaults = UserDefaults(suiteName: testSuiteName)
+        manager = SSHTunnelManager(userDefaults: testDefaults)
         manager.tunnels.removeAll()
     }
 
@@ -17,8 +22,10 @@ final class DuplicateTunnelTests: XCTestCase {
         for tunnel in manager.tunnels {
             _ = KeychainHelper.shared.delete(forKey: tunnel.passwordKeychainKey)
         }
-        UserDefaults.standard.removeObject(forKey: "savedTunnels")
+        testDefaults.removePersistentDomain(forName: testSuiteName)
         manager = nil
+        testDefaults = nil
+        testSuiteName = nil
         super.tearDown()
     }
 
@@ -114,7 +121,7 @@ final class DuplicateTunnelTests: XCTestCase {
         manager.addTunnel(SSHTunnel(name: "Orig", sshServer: "s", username: "u"))
         _ = manager.duplicateTunnel(manager.tunnels[0])
 
-        let reloaded = SSHTunnelManager()
+        let reloaded = SSHTunnelManager(userDefaults: testDefaults)
         XCTAssertEqual(reloaded.tunnels.count, 2)
         XCTAssertEqual(reloaded.tunnels.map { $0.name }, ["Orig", "Orig Copy"])
         XCTAssertNotEqual(reloaded.tunnels[0].id, reloaded.tunnels[1].id)

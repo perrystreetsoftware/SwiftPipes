@@ -7,6 +7,20 @@ enum ConnectionState: Equatable, Hashable {
     case failed(String)
 }
 
+/// Surfaced when ssh refuses a connection because the server's host key doesn't
+/// match what's recorded in known_hosts. The view layer presents this as an
+/// alert with Accept / Cancel options.
+struct HostKeyPrompt: Identifiable, Equatable {
+    let id = UUID()
+    let tunnelId: UUID
+    let host: String
+    let port: Int
+    let keyType: String              // e.g. "ED25519", "RSA"
+    let newFingerprint: String       // e.g. "SHA256:abc..."
+    let previousFingerprint: String?
+    let knownHostsPath: String?
+}
+
 enum ProxyMode: String, Codable, CaseIterable, Hashable {
     case off
     case all
