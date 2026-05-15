@@ -10,6 +10,23 @@ import XCTest
 ///   - summarizeSSHFailure maps common ssh(1) stderr patterns to user-meaningful text.
 final class ConnectionStateTests: XCTestCase {
 
+    private var testDefaults: UserDefaults!
+    private var testSuiteName: String!
+
+    override func setUp() {
+        super.setUp()
+        // Per-test UserDefaults suite: never clobber the real app's savedTunnels.
+        testSuiteName = "com.swiftpipes.tests.\(UUID().uuidString)"
+        testDefaults = UserDefaults(suiteName: testSuiteName)
+    }
+
+    override func tearDown() {
+        testDefaults.removePersistentDomain(forName: testSuiteName)
+        testDefaults = nil
+        testSuiteName = nil
+        super.tearDown()
+    }
+
     // MARK: - ConnectionState / SSHTunnel invariants
 
     func testNewTunnelStartsDisconnected() {
@@ -48,10 +65,7 @@ final class ConnectionStateTests: XCTestCase {
     // MARK: - Persistence: connectionState must not be saved
 
     func testConnectionStateIsNotPersisted() {
-        UserDefaults.standard.removeObject(forKey: "savedTunnels")
-        defer { UserDefaults.standard.removeObject(forKey: "savedTunnels") }
-
-        let manager = SSHTunnelManager()
+        let manager = SSHTunnelManager(userDefaults: testDefaults)
         manager.tunnels.removeAll()
 
         let tunnel = SSHTunnel(name: "t", sshServer: "s", username: "u")
@@ -61,14 +75,11 @@ final class ConnectionStateTests: XCTestCase {
         if let idx = manager.tunnels.firstIndex(where: { $0.id == tunnel.id }) {
             manager.tunnels[idx].connectionState = .connected
         }
-        // Re-save so the "connected" state would be persisted if it were encodable.
-        manager.tunnels = manager.tunnels // no-op, but trigger nothing special
-        // addTunnel already called saveTunnels() above, which is what persists. The
-        // key is: even if connectionState were encoded, loadTunnels should reset it.
-        // Force a save by re-adding via updateTunnel path:
+        // Force a save via updateTunnel so connectionState would be persisted
+        // if it were encodable.
         manager.updateTunnel(manager.tunnels[0])
 
-        let reloaded = SSHTunnelManager()
+        let reloaded = SSHTunnelManager(userDefaults: testDefaults)
         XCTAssertEqual(reloaded.tunnels.count, 1)
         XCTAssertEqual(reloaded.tunnels[0].connectionState, .disconnected,
                        "restored tunnels must never come back as connected")
@@ -142,10 +153,7 @@ final class ConnectionStateTests: XCTestCase {
     // MARK: - Manager behavior
 
     func testConnectFailsWhenLocalPortInUseDoesNotShowAsConnected() {
-        UserDefaults.standard.removeObject(forKey: "savedTunnels")
-        defer { UserDefaults.standard.removeObject(forKey: "savedTunnels") }
-
-        let manager = SSHTunnelManager()
+        let manager = SSHTunnelManager(userDefaults: testDefaults)
         manager.tunnels.removeAll()
 
         // Occupy a port locally.
