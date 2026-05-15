@@ -207,6 +207,9 @@ class NetworkProxyManager {
         var commands: [String] = []
         for service in services {
             let escaped = shellEscape(service)
+            // Turn off any lingering PAC auto-proxy before enabling classic SOCKS,
+            // so a prior selective-mode session can't leave PAC active alongside.
+            commands.append("/usr/sbin/networksetup -setautoproxystate '\(escaped)' off")
             commands.append("/usr/sbin/networksetup -setsocksfirewallproxy '\(escaped)' '\(escapedHost)' '\(port)'")
             commands.append("/usr/sbin/networksetup -setsocksfirewallproxystate '\(escaped)' on")
         }
@@ -214,6 +217,11 @@ class NetworkProxyManager {
         if !commands.isEmpty {
             runCommandsBatch(commands)
         }
+
+        // Also stop our own PAC server if it was left running from a previous
+        // selective-mode session.
+        pacServer?.stop()
+        pacServer = nil
     }
 
     func disableSOCKSProxy() {
@@ -291,6 +299,45 @@ class NetworkProxyManager {
         }
         pacServer?.stop()
         pacServer = nil
+    }
+
+    /// Read-only probe (no sudo) to detect stale system proxy state from a
+    /// previous crash/force-quit. `networksetup -get*` commands don't require
+    /// elevated privileges, so calling this on every launch is silent.
+    func isAnyProxyActive() -> Bool {
+        for service in getNetworkServices() {
+            if isSOCKSOn(service: service) || isAutoProxyOn(service: service) {
+                return true
+            }
+        }
+        return false
+    }
+
+    private func isSOCKSOn(service: String) -> Bool {
+        return runReadOnly(args: ["-getsocksfirewallproxy", service])
+            .contains("Enabled: Yes")
+    }
+
+    private func isAutoProxyOn(service: String) -> Bool {
+        return runReadOnly(args: ["-getautoproxyurl", service])
+            .contains("Enabled: Yes")
+    }
+
+    private func runReadOnly(args: [String]) -> String {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/sbin/networksetup")
+        process.arguments = args
+        let pipe = Pipe()
+        process.standardOutput = pipe
+        process.standardError = Pipe() // silence
+        do {
+            try process.run()
+            process.waitUntilExit()
+            let data = pipe.fileHandleForReading.readDataToEndOfFile()
+            return String(data: data, encoding: .utf8) ?? ""
+        } catch {
+            return ""
+        }
     }
 
     private func shellEscape(_ s: String) -> String {

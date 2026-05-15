@@ -16,6 +16,7 @@ class SSHTunnelManager: ObservableObject {
         loadTunnels()
         setupCleanupOnTermination()
         requestNotificationPermissions()
+        sweepOrphanedSystemProxy()
     }
     
     deinit {
@@ -196,6 +197,7 @@ class SSHTunnelManager: ObservableObject {
             print("Port \(tunnel.localPort) is already in use. Cannot connect.")
             tunnels[index].connectionState = .failed("Local port \(tunnel.localPort) is already in use")
             updateActiveConnectionStatus()
+            clearOrphanedProxyIfAny()
             return
         }
         
@@ -257,6 +259,7 @@ class SSHTunnelManager: ObservableObject {
                     print("Failed to start SSH process: \(error)")
                     tunnels[index].connectionState = .failed("Failed to start ssh: \(error.localizedDescription)")
                     updateActiveConnectionStatus()
+                    clearOrphanedProxyIfAny()
                     return
                 }
             } else {
@@ -266,6 +269,7 @@ class SSHTunnelManager: ObservableObject {
                     print("Failed to start SSH process: \(error)")
                     tunnels[index].connectionState = .failed("Failed to start ssh: \(error.localizedDescription)")
                     updateActiveConnectionStatus()
+                    clearOrphanedProxyIfAny()
                     return
                 }
             }
@@ -276,6 +280,7 @@ class SSHTunnelManager: ObservableObject {
                 print("Failed to start SSH process: \(error)")
                 tunnels[index].connectionState = .failed("Failed to start ssh: \(error.localizedDescription)")
                 updateActiveConnectionStatus()
+                clearOrphanedProxyIfAny()
                 return
             }
         }
@@ -389,6 +394,7 @@ class SSHTunnelManager: ObservableObject {
                         title: "Connection Failed",
                         body: "\(self.tunnels[idx].name): \(reason)"
                     )
+                    self.clearOrphanedProxyIfAny()
                 }
                 self.updateActiveConnectionStatus()
                 self.processes.removeValue(forKey: tunnelId)
@@ -418,6 +424,31 @@ class SSHTunnelManager: ObservableObject {
             return last
         }
         return "SSH process exited before the tunnel was established"
+    }
+
+    /// Called once at launch. If any system proxy is still on, it must be an
+    /// orphan from a previous crash / force-quit (all tunnels decode as
+    /// .disconnected, so no live session could have put it there). Read checks
+    /// don't need sudo; disable only runs if there's actually something to clean.
+    private func sweepOrphanedSystemProxy() {
+        DispatchQueue.global(qos: .utility).async { [weak self] in
+            guard let self = self else { return }
+            if self.proxyManager.isAnyProxyActive() {
+                print("SwiftPipes: found orphaned system proxy at launch — clearing")
+                self.proxyManager.disableAllProxyConfig()
+            }
+        }
+    }
+
+    /// Defensive proxy clear on failure paths. Gated on the read-only probe so
+    /// we don't prompt for sudo when the system is already clean.
+    private func clearOrphanedProxyIfAny() {
+        DispatchQueue.global(qos: .utility).async { [weak self] in
+            guard let self = self else { return }
+            if self.proxyManager.isAnyProxyActive() {
+                self.proxyManager.disableAllProxyConfig()
+            }
+        }
     }
 
     func disconnect(_ tunnelId: UUID) {
