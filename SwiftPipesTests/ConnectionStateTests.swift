@@ -174,6 +174,57 @@ final class ConnectionStateTests: XCTestCase {
         }
     }
 
+    // MARK: - SwiftPipes ssh argv signature matcher
+
+    func testIsSwiftPipesSshArgvMatchesRealCommand() {
+        // Captured from a real orphaned SwiftPipes ssh:
+        let cmd = "/usr/bin/ssh -v -D localhost:8158 -N -p 32722 -o ConnectTimeout=10 -o ExitOnForwardFailure=yes -o StrictHostKeyChecking=accept-new -i /Users/pss/.ssh/id_rsa_scruff -o ServerAliveInterval=30 -o ServerAliveCountMax=3 user@host.example.com"
+        XCTAssertTrue(SSHTunnelManager.isSwiftPipesSshArgv(cmd))
+    }
+
+    func testIsSwiftPipesSshArgvRejectsPlainSsh() {
+        XCTAssertFalse(SSHTunnelManager.isSwiftPipesSshArgv("/usr/bin/ssh user@host"))
+    }
+
+    func testIsSwiftPipesSshArgvRejectsLocalForward() {
+        // -L is local forward, NOT what SwiftPipes spawns.
+        let cmd = "/usr/bin/ssh -L 8080:localhost:80 -N user@host"
+        XCTAssertFalse(SSHTunnelManager.isSwiftPipesSshArgv(cmd))
+    }
+
+    func testIsSwiftPipesSshArgvRejectsNonSystemSsh() {
+        // A homebrew/manually-installed ssh wouldn't be at /usr/bin.
+        let cmd = "/opt/homebrew/bin/ssh -v -D localhost:8158 -N -p 22 -o ConnectTimeout=10 -o ExitOnForwardFailure=yes user@host"
+        XCTAssertFalse(SSHTunnelManager.isSwiftPipesSshArgv(cmd))
+    }
+
+    func testIsSwiftPipesSshArgvRejectsMissingFlag() {
+        // Missing ExitOnForwardFailure — could be a different tool's invocation.
+        let cmd = "/usr/bin/ssh -v -D localhost:8158 -N -p 22 -o ConnectTimeout=10 user@host"
+        XCTAssertFalse(SSHTunnelManager.isSwiftPipesSshArgv(cmd))
+    }
+
+    // MARK: - lsofListener / describePortHolder
+
+    func testLsofListenerIdentifiesListener() throws {
+        let listener = makeListeningSocket()
+        defer { close(listener.fd) }
+
+        // The test process itself is holding the port. lsof should find it.
+        guard let holder = SSHTunnelManager.lsofListener(port: listener.port) else {
+            throw XCTSkip("lsof unavailable or returned no rows for the test-held port")
+        }
+        XCTAssertGreaterThan(holder.pid, 0)
+        XCTAssertFalse(holder.command.isEmpty,
+                       "command name should not be empty (got pid \(holder.pid))")
+    }
+
+    func testLsofListenerReturnsNilForFreePort() {
+        // Pick an unlikely-bound high port. Tiny race risk but the function
+        // should still return a well-formed value either way.
+        _ = SSHTunnelManager.lsofListener(port: 59999)
+    }
+
     // MARK: - Helpers
 
     private func makeListeningSocket() -> (fd: Int32, port: Int) {

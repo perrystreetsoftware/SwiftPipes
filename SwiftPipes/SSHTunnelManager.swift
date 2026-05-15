@@ -16,6 +16,7 @@ class SSHTunnelManager: ObservableObject {
         loadTunnels()
         setupCleanupOnTermination()
         requestNotificationPermissions()
+        sweepOrphanedSwiftPipesSshProcesses()
     }
     
     deinit {
@@ -194,8 +195,23 @@ class SSHTunnelManager: ObservableObject {
         // Check if port is already in use
         if isPortInUse(port: tunnel.localPort) {
             print("Port \(tunnel.localPort) is already in use. Cannot connect.")
-            tunnels[index].connectionState = .failed("Local port \(tunnel.localPort) is already in use")
+            let holder = describePortHolder(port: tunnel.localPort)
+            let reason = portInUseReasonFor(port: tunnel.localPort, holder: holder)
+            tunnels[index].connectionState = .failed(reason)
             updateActiveConnectionStatus()
+            // If the holder is a leftover SwiftPipes tunnel, offer to recover.
+            if let holder = holder {
+                switch holder {
+                case .ours, .orphanedSwiftPipes:
+                    presentPortInUseRecoveryAlert(
+                        tunnelId: tunnelId,
+                        port: tunnel.localPort,
+                        holder: holder
+                    )
+                case .foreign:
+                    break
+                }
+            }
             return
         }
         
@@ -396,6 +412,125 @@ class SSHTunnelManager: ObservableObject {
         }
     }
 
+    /// Classified description of whatever process is holding a local port.
+    enum PortHolder {
+        /// A live ssh process spawned by THIS app instance (in `processes`).
+        case ours(pid: Int)
+        /// An orphaned ssh whose argv matches the SwiftPipes invocation
+        /// signature — i.e. a leftover from a crashed / force-quit session.
+        case orphanedSwiftPipes(pid: Int, command: String)
+        /// Anything else: another app, the user's own ssh, etc. We never kill these.
+        case foreign(command: String, pid: Int)
+
+        var pid: Int {
+            switch self {
+            case .ours(let p), .orphanedSwiftPipes(let p, _), .foreign(_, let p): return p
+            }
+        }
+    }
+
+    /// Build a human-readable reason for a "local port already in use" failure.
+    /// Caller passes a pre-computed holder to avoid running lsof/ps twice.
+    private func portInUseReasonFor(port: Int, holder: PortHolder?) -> String {
+        guard let holder = holder else {
+            return "Local port \(port) is already in use"
+        }
+        switch holder {
+        case .ours:
+            return "Local port \(port) is already in use by another SwiftPipes tunnel — disconnect it first"
+        case .orphanedSwiftPipes(let pid, _):
+            return "Local port \(port) is held by a leftover SwiftPipes tunnel from a previous session (PID \(pid))"
+        case .foreign(let command, let pid):
+            return "Local port \(port) is already in use by \(command) (PID \(pid))"
+        }
+    }
+
+    /// Inspect what is listening on a TCP port and classify it. Combines lsof
+    /// (for PID + command name) with `ps` (for full argv) so we can recognize
+    /// our own leftover ssh processes by their flag signature.
+    func describePortHolder(port: Int) -> PortHolder? {
+        guard let (command, pid) = Self.lsofListener(port: port) else { return nil }
+        let ourPids = Set(processes.values.compactMap { $0.isRunning ? Int($0.processIdentifier) : nil })
+        if ourPids.contains(pid) {
+            return .ours(pid: pid)
+        }
+        if command.hasPrefix("ssh"), let argv = Self.psCommandLine(pid: pid),
+           Self.isSwiftPipesSshArgv(argv) {
+            return .orphanedSwiftPipes(pid: pid, command: argv)
+        }
+        return .foreign(command: command, pid: pid)
+    }
+
+    /// First listening process on the given TCP port (own user only), via lsof.
+    /// Returns nil if lsof is missing, errors, or finds nothing.
+    static func lsofListener(port: Int) -> (command: String, pid: Int)? {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/sbin/lsof")
+        process.arguments = ["-nP", "-iTCP:\(port)", "-sTCP:LISTEN"]
+        let outPipe = Pipe()
+        process.standardOutput = outPipe
+        process.standardError = Pipe()
+        do {
+            try process.run()
+            process.waitUntilExit()
+        } catch {
+            return nil
+        }
+        let data = outPipe.fileHandleForReading.readDataToEndOfFile()
+        guard let output = String(data: data, encoding: .utf8) else { return nil }
+        for line in output.split(separator: "\n").dropFirst() {
+            let fields = line.split(whereSeparator: { $0 == " " || $0 == "\t" })
+            guard fields.count >= 2 else { continue }
+            let command = String(fields[0])
+            guard let pid = Int(fields[1]) else { continue }
+            return (command, pid)
+        }
+        return nil
+    }
+
+    /// Full command line of a process via `ps -ww -p <pid> -o command=`.
+    /// Returns nil on error or if the pid isn't running.
+    static func psCommandLine(pid: Int) -> String? {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/bin/ps")
+        process.arguments = ["-ww", "-p", "\(pid)", "-o", "command="]
+        let outPipe = Pipe()
+        process.standardOutput = outPipe
+        process.standardError = Pipe()
+        do {
+            try process.run()
+            process.waitUntilExit()
+        } catch {
+            return nil
+        }
+        let data = outPipe.fileHandleForReading.readDataToEndOfFile()
+        guard let s = String(data: data, encoding: .utf8) else { return nil }
+        let trimmed = s.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? nil : trimmed
+    }
+
+    /// Heuristic: does this command line look like a SwiftPipes-spawned ssh
+    /// tunnel? We look for the exact set of flags `connect()` always passes.
+    /// Multiple matches together make false-positives effectively impossible.
+    static func isSwiftPipesSshArgv(_ command: String) -> Bool {
+        guard command.hasPrefix("/usr/bin/ssh ") || command.hasPrefix("/usr/bin/ssh\t") else {
+            return false
+        }
+        // SwiftPipes always passes:  -v   -D <addr>:<port>   -N
+        //                            -o ConnectTimeout=10
+        //                            -o ExitOnForwardFailure=yes
+        let required = [
+            " -D ",
+            " -N ",
+            "ConnectTimeout=10",
+            "ExitOnForwardFailure=yes",
+        ]
+        for needle in required where !command.contains(needle) {
+            return false
+        }
+        return true
+    }
+
     /// Extract a short human-readable reason from ssh -v stderr output.
     static func summarizeSSHFailure(stderr: String) -> String {
         let lines = stderr.split(whereSeparator: { $0 == "\n" || $0 == "\r" }).map(String.init)
@@ -418,6 +553,108 @@ class SSHTunnelManager: ObservableObject {
             return last
         }
         return "SSH process exited before the tunnel was established"
+    }
+
+    /// Called once at launch. Finds ssh processes that look like
+    /// SwiftPipes-spawned tunnels with PPID==1 (reparented to launchd, i.e.
+    /// their original SwiftPipes parent died) and SIGTERMs them. At launch
+    /// every saved tunnel is `.disconnected`, so any matching ssh can only
+    /// be a leftover.
+    private func sweepOrphanedSwiftPipesSshProcesses() {
+        DispatchQueue.global(qos: .utility).async {
+            let orphans = Self.findOrphanedSwiftPipesSshPids()
+            guard !orphans.isEmpty else { return }
+            for pid in orphans {
+                _ = kill(pid_t(pid), SIGTERM)
+            }
+            print("SwiftPipes: cleaned \(orphans.count) orphaned ssh tunnel(s) at launch: \(orphans)")
+        }
+    }
+
+    /// Enumerate processes via `ps -axwwo pid=,ppid=,command=` and return PIDs
+    /// for processes whose argv matches the SwiftPipes-ssh signature AND whose
+    /// PPID is 1 (orphaned, reparented to launchd). Returning [] on any error
+    /// is fine — the sweep is best-effort.
+    static func findOrphanedSwiftPipesSshPids() -> [Int] {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/bin/ps")
+        process.arguments = ["-axwwo", "pid=,ppid=,command="]
+        let outPipe = Pipe()
+        process.standardOutput = outPipe
+        process.standardError = Pipe()
+        do {
+            try process.run()
+            process.waitUntilExit()
+        } catch {
+            return []
+        }
+        let data = outPipe.fileHandleForReading.readDataToEndOfFile()
+        guard let output = String(data: data, encoding: .utf8) else { return [] }
+        var orphans: [Int] = []
+        for rawLine in output.split(separator: "\n") {
+            // ps emits leading spaces for right-aligned numeric columns; trim them.
+            let line = rawLine.trimmingCharacters(in: .whitespaces)
+            guard !line.isEmpty else { continue }
+            // Split into pid, ppid, command (max 3 substrings).
+            let parts = line.split(maxSplits: 2, whereSeparator: { $0 == " " || $0 == "\t" })
+            guard parts.count == 3,
+                  let pid = Int(parts[0]),
+                  let ppid = Int(parts[1]) else { continue }
+            guard ppid == 1 else { continue }
+            let command = String(parts[2])
+            if isSwiftPipesSshArgv(command) {
+                orphans.append(pid)
+            }
+        }
+        return orphans
+    }
+
+    /// Modal alert offering to terminate a leftover/duplicate SwiftPipes ssh
+    /// process holding the local port and retry the connection.
+    private func presentPortInUseRecoveryAlert(
+        tunnelId: UUID,
+        port: Int,
+        holder: PortHolder
+    ) {
+        let alert = NSAlert()
+        alert.alertStyle = .warning
+        alert.messageText = "Port \(port) is held by a previous SwiftPipes tunnel"
+
+        let pid = holder.pid
+        var info = ""
+        switch holder {
+        case .ours:
+            info = "Another active SwiftPipes tunnel (PID \(pid)) is currently bound to port \(port).\n\nTerminate it and retry this connection?"
+        case .orphanedSwiftPipes(_, let command):
+            info = "A leftover ssh process (PID \(pid)) from a prior SwiftPipes session is still bound to port \(port). Terminate it and retry the connection?\n\n\(command)"
+        case .foreign:
+            // Should not reach here — caller filters foreign holders out.
+            return
+        }
+        alert.informativeText = info
+
+        alert.addButton(withTitle: "Recover and Reconnect")
+        alert.addButton(withTitle: "Cancel")
+
+        NSApp.activate(ignoringOtherApps: true)
+        let response = alert.runModal()
+        guard response == .alertFirstButtonReturn else { return }
+
+        // SIGTERM the holder, wait briefly for the kernel to release the port,
+        // then retry. All of this happens off the main thread so the UI doesn't
+        // freeze during the wait; we hop back for the actual reconnect.
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            _ = kill(pid_t(pid), SIGTERM)
+            // Poll up to ~1.5s for the port to be released.
+            let deadline = Date().addingTimeInterval(1.5)
+            while Date() < deadline {
+                if self?.isPortInUse(port: port) == false { break }
+                Thread.sleep(forTimeInterval: 0.1)
+            }
+            DispatchQueue.main.async {
+                self?.connect(tunnelId)
+            }
+        }
     }
 
     func disconnect(_ tunnelId: UUID) {
