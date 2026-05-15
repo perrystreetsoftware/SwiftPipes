@@ -6,7 +6,11 @@ import UserNotifications
 class SSHTunnelManager: ObservableObject {
     @Published var tunnels: [SSHTunnel] = []
     @Published var hasActiveConnections = false
-    
+    /// Non-nil when the last connect attempt failed because the server's host
+    /// key doesn't match known_hosts. The view layer presents an alert with
+    /// Accept / Cancel options.
+    @Published var pendingHostKeyPrompt: HostKeyPrompt?
+
     private var processes: [UUID: Process] = [:]
     private let proxyManager = NetworkProxyManager()
     private let defaults: UserDefaults
@@ -383,12 +387,32 @@ class SSHTunnelManager: ObservableObject {
                 } else if case .connecting = self.tunnels[idx].connectionState {
                     // Process exited before we ever saw a successful handshake — this is
                     // the firewall/blocked case (or auth failure, DNS failure, etc.).
-                    let reason = Self.summarizeSSHFailure(stderr: stderrText)
-                    self.tunnels[idx].connectionState = .failed(reason)
-                    self.showNotification(
-                        title: "Connection Failed",
-                        body: "\(self.tunnels[idx].name): \(reason)"
-                    )
+                    let tunnel = self.tunnels[idx]
+                    if stderrText.contains("Host key verification failed") ||
+                       stderrText.contains("REMOTE HOST IDENTIFICATION HAS CHANGED") {
+                        // Surface a prompt so the user can accept the new key and reconnect.
+                        self.tunnels[idx].connectionState = .failed("Host key verification failed")
+                        self.showNotification(
+                            title: "Connection Failed",
+                            body: "\(tunnel.name): host key changed — action required"
+                        )
+                        if let prompt = Self.parseHostKeyChange(
+                            stderr: stderrText,
+                            tunnelId: tunnelId,
+                            host: tunnel.sshServer,
+                            port: tunnel.port
+                        ) {
+                            self.pendingHostKeyPrompt = prompt
+                            self.presentHostKeyAlert(prompt)
+                        }
+                    } else {
+                        let reason = Self.summarizeSSHFailure(stderr: stderrText)
+                        self.tunnels[idx].connectionState = .failed(reason)
+                        self.showNotification(
+                            title: "Connection Failed",
+                            body: "\(tunnel.name): \(reason)"
+                        )
+                    }
                 }
                 self.updateActiveConnectionStatus()
                 self.processes.removeValue(forKey: tunnelId)
@@ -418,6 +442,156 @@ class SSHTunnelManager: ObservableObject {
             return last
         }
         return "SSH process exited before the tunnel was established"
+    }
+
+    /// Called from the view layer when the user confirms the new host key.
+    /// Removes the stale known_hosts entries and re-runs connect(), which
+    /// re-learns the key via StrictHostKeyChecking=accept-new.
+    func acceptNewHostKeyAndReconnect(promptId: UUID) {
+        guard let prompt = pendingHostKeyPrompt, prompt.id == promptId else { return }
+        let tunnelId = prompt.tunnelId
+        let host = prompt.host
+        let port = prompt.port
+
+        pendingHostKeyPrompt = nil
+
+        runSSHKeygenRemove(host: host, port: nil)
+        if port != 22 {
+            runSSHKeygenRemove(host: host, port: port)
+        }
+
+        connect(tunnelId)
+    }
+
+    /// Called from the view layer when the user cancels the host-key prompt.
+    func rejectHostKey(promptId: UUID) {
+        guard let prompt = pendingHostKeyPrompt, prompt.id == promptId else { return }
+        if let idx = tunnels.firstIndex(where: { $0.id == prompt.tunnelId }) {
+            tunnels[idx].connectionState = .failed("Host key rejected by user")
+        }
+        pendingHostKeyPrompt = nil
+        updateActiveConnectionStatus()
+    }
+
+    private func runSSHKeygenRemove(host: String, port: Int?) {
+        let target: String
+        if let port = port {
+            target = "[\(host)]:\(port)"
+        } else {
+            target = host
+        }
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/ssh-keygen")
+        process.arguments = ["-R", target]
+        process.standardOutput = Pipe()
+        process.standardError = Pipe()
+        do {
+            try process.run()
+            process.waitUntilExit()
+        } catch {
+            print("Failed to run ssh-keygen -R \(target): \(error)")
+        }
+    }
+
+    /// Extract key-type, new fingerprint, and the offending known_hosts path
+    /// from ssh -v stderr when a host-key-changed failure occurred.
+    static func parseHostKeyChange(
+        stderr: String,
+        tunnelId: UUID,
+        host: String,
+        port: Int
+    ) -> HostKeyPrompt? {
+        guard stderr.contains("Host key verification failed") ||
+              stderr.contains("REMOTE HOST IDENTIFICATION HAS CHANGED") else {
+            return nil
+        }
+
+        let lines = stderr.split(whereSeparator: { $0 == "\n" || $0 == "\r" }).map(String.init)
+
+        var keyType = "unknown"
+        var newFingerprint = "unknown"
+        // Prefer the "debug1: Server host key: <type> SHA256:<hash>" line, which
+        // ssh -v prints before the failure banner.
+        if let line = lines.first(where: {
+            $0.contains("Server host key:") && $0.contains("SHA256:")
+        }) {
+            let tokens = line.split(separator: " ").map(String.init)
+            for t in tokens where t.hasPrefix("SHA256:") {
+                newFingerprint = t
+                break
+            }
+            if let typeIdx = tokens.firstIndex(of: "key:"), typeIdx + 1 < tokens.count {
+                keyType = normalizeKeyType(tokens[typeIdx + 1])
+            }
+        }
+
+        // "Offending ED25519 key in /Users/foo/.ssh/known_hosts:42"
+        var knownHostsPath: String? = nil
+        if let line = lines.first(where: { $0.contains("Offending") && $0.contains("key in") }) {
+            let tokens = line.split(separator: " ").map(String.init)
+            if let offIdx = tokens.firstIndex(of: "Offending"), offIdx + 1 < tokens.count {
+                keyType = normalizeKeyType(tokens[offIdx + 1])
+            }
+            if let inRange = line.range(of: "key in ") {
+                let pathAndLine = String(line[inRange.upperBound...])
+                    .trimmingCharacters(in: .whitespaces)
+                if let colon = pathAndLine.lastIndex(of: ":") {
+                    knownHostsPath = String(pathAndLine[..<colon])
+                } else {
+                    knownHostsPath = pathAndLine
+                }
+            }
+        }
+
+        return HostKeyPrompt(
+            tunnelId: tunnelId,
+            host: host,
+            port: port,
+            keyType: keyType,
+            newFingerprint: newFingerprint,
+            previousFingerprint: nil,
+            knownHostsPath: knownHostsPath
+        )
+    }
+
+    /// Present an NSAlert describing the host-key change and route the user's
+    /// choice back into accept / reject. Runs on the main thread.
+    private func presentHostKeyAlert(_ prompt: HostKeyPrompt) {
+        let alert = NSAlert()
+        alert.alertStyle = .warning
+        alert.messageText = "Host key changed for \(prompt.host)"
+
+        var info = "The SSH server's key doesn't match what's recorded in known_hosts.\n\n"
+        info += "This can happen legitimately if the server was rebuilt — or it can indicate someone is impersonating the server (man-in-the-middle attack). Only accept the new key if you were expecting the change.\n\n"
+        info += "Key type: \(prompt.keyType)\n"
+        info += "New fingerprint:\n\(prompt.newFingerprint)"
+        if let prev = prompt.previousFingerprint {
+            info += "\n\nPrevious fingerprint:\n\(prev)"
+        }
+        if let path = prompt.knownHostsPath {
+            info += "\n\nFile: \(path)"
+        }
+        alert.informativeText = info
+
+        alert.addButton(withTitle: "Accept and Reconnect")
+        alert.addButton(withTitle: "Cancel")
+
+        NSApp.activate(ignoringOtherApps: true)
+        let response = alert.runModal()
+        if response == .alertFirstButtonReturn {
+            acceptNewHostKeyAndReconnect(promptId: prompt.id)
+        } else {
+            rejectHostKey(promptId: prompt.id)
+        }
+    }
+
+    private static func normalizeKeyType(_ raw: String) -> String {
+        let lower = raw.lowercased()
+        if lower == "ssh-ed25519" || lower == "ed25519" { return "ED25519" }
+        if lower == "ssh-rsa" || lower == "rsa" { return "RSA" }
+        if lower == "ssh-dss" || lower == "dsa" { return "DSA" }
+        if lower.hasPrefix("ecdsa") { return "ECDSA" }
+        return raw
     }
 
     func disconnect(_ tunnelId: UUID) {

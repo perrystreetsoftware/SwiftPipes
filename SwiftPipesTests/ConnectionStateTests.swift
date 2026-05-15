@@ -174,6 +174,78 @@ final class ConnectionStateTests: XCTestCase {
         }
     }
 
+    // MARK: - Host key prompt parsing
+
+    func testParseHostKeyChangeReturnsNilForNonHostKeyStderr() {
+        let stderr = "Permission denied (publickey,password)."
+        let prompt = SSHTunnelManager.parseHostKeyChange(
+            stderr: stderr,
+            tunnelId: UUID(),
+            host: "example.com",
+            port: 22
+        )
+        XCTAssertNil(prompt)
+    }
+
+    func testParseHostKeyChangeExtractsFingerprintAndType() {
+        let stderr = """
+        debug1: Connecting to example.com port 22.
+        debug1: Connection established.
+        debug1: Server host key: ssh-ed25519 SHA256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
+        @@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@
+        @    WARNING: REMOTE HOST IDENTIFICATION HAS CHANGED!     @
+        @@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@
+        Offending ED25519 key in /Users/foo/.ssh/known_hosts:42
+        Host key for example.com has changed and you have requested strict checking.
+        Host key verification failed.
+        """
+        let tunnelId = UUID()
+        let prompt = SSHTunnelManager.parseHostKeyChange(
+            stderr: stderr,
+            tunnelId: tunnelId,
+            host: "example.com",
+            port: 22
+        )
+        XCTAssertNotNil(prompt)
+        XCTAssertEqual(prompt?.tunnelId, tunnelId)
+        XCTAssertEqual(prompt?.host, "example.com")
+        XCTAssertEqual(prompt?.port, 22)
+        XCTAssertEqual(prompt?.keyType, "ED25519")
+        XCTAssertEqual(prompt?.newFingerprint, "SHA256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA")
+        XCTAssertEqual(prompt?.knownHostsPath, "/Users/foo/.ssh/known_hosts")
+    }
+
+    func testParseHostKeyChangeRSA() {
+        let stderr = """
+        debug1: Server host key: ssh-rsa SHA256:BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB
+        Host key verification failed.
+        """
+        let prompt = SSHTunnelManager.parseHostKeyChange(
+            stderr: stderr,
+            tunnelId: UUID(),
+            host: "host",
+            port: 2222
+        )
+        XCTAssertEqual(prompt?.keyType, "RSA")
+        XCTAssertEqual(prompt?.newFingerprint, "SHA256:BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB")
+    }
+
+    func testParseHostKeyChangeWithoutOffendingLineStillReturnsPrompt() {
+        let stderr = """
+        debug1: Server host key: ecdsa-sha2-nistp256 SHA256:CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC
+        Host key verification failed.
+        """
+        let prompt = SSHTunnelManager.parseHostKeyChange(
+            stderr: stderr,
+            tunnelId: UUID(),
+            host: "host",
+            port: 22
+        )
+        XCTAssertNotNil(prompt)
+        XCTAssertEqual(prompt?.keyType, "ECDSA")
+        XCTAssertNil(prompt?.knownHostsPath)
+    }
+
     // MARK: - Helpers
 
     private func makeListeningSocket() -> (fd: Int32, port: Int) {
