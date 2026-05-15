@@ -34,35 +34,21 @@ class SSHTunnelManager: ObservableObject {
     
     private func requestNotificationPermissions() {
         let center = UNUserNotificationCenter.current()
-        
-        // Define notification categories
-        let connectAction = UNNotificationAction(identifier: "CONNECT_ACTION",
-                                                   title: "Open SwiftPipes",
-                                                   options: .foreground)
-        
-        let category = UNNotificationCategory(identifier: "CONNECTION_STATUS",
-                                               actions: [connectAction],
-                                               intentIdentifiers: [],
-                                               options: [])
-        
-        center.setNotificationCategories([category])
-        
         center.requestAuthorization(options: [.alert, .sound]) { granted, error in
             if let error = error {
                 print("Failed to request notification permissions: \(error)")
             }
         }
     }
-    
+
     private func showNotification(title: String, body: String) {
         guard PreferencesManager.shared.showNotifications else { return }
-        
+
         let content = UNMutableNotificationContent()
         content.title = title
         content.body = body
         content.sound = .default
-        content.categoryIdentifier = "CONNECTION_STATUS"
-        
+
         let request = UNNotificationRequest(
             identifier: UUID().uuidString,
             content: content,
@@ -194,8 +180,13 @@ class SSHTunnelManager: ObservableObject {
         // Check if port is already in use
         if isPortInUse(port: tunnel.localPort) {
             print("Port \(tunnel.localPort) is already in use. Cannot connect.")
-            tunnels[index].connectionState = .failed("Local port \(tunnel.localPort) is already in use")
+            let reason = "Local port \(tunnel.localPort) is already in use"
+            tunnels[index].connectionState = .failed(reason)
             updateActiveConnectionStatus()
+            showNotification(
+                title: "Connection Failed",
+                body: "\(tunnel.name): \(reason)"
+            )
             return
         }
         
@@ -255,8 +246,13 @@ class SSHTunnelManager: ObservableObject {
                     }
                 } catch {
                     print("Failed to start SSH process: \(error)")
-                    tunnels[index].connectionState = .failed("Failed to start ssh: \(error.localizedDescription)")
+                    let reason = "Failed to start ssh: \(error.localizedDescription)"
+                    tunnels[index].connectionState = .failed(reason)
                     updateActiveConnectionStatus()
+                    showNotification(
+                        title: "Connection Failed",
+                        body: "\(tunnel.name): \(reason)"
+                    )
                     return
                 }
             } else {
@@ -264,8 +260,13 @@ class SSHTunnelManager: ObservableObject {
                     try process.run()
                 } catch {
                     print("Failed to start SSH process: \(error)")
-                    tunnels[index].connectionState = .failed("Failed to start ssh: \(error.localizedDescription)")
+                    let reason = "Failed to start ssh: \(error.localizedDescription)"
+                    tunnels[index].connectionState = .failed(reason)
                     updateActiveConnectionStatus()
+                    showNotification(
+                        title: "Connection Failed",
+                        body: "\(tunnel.name): \(reason)"
+                    )
                     return
                 }
             }
@@ -274,8 +275,13 @@ class SSHTunnelManager: ObservableObject {
                 try process.run()
             } catch {
                 print("Failed to start SSH process: \(error)")
-                tunnels[index].connectionState = .failed("Failed to start ssh: \(error.localizedDescription)")
+                let reason = "Failed to start ssh: \(error.localizedDescription)"
+                tunnels[index].connectionState = .failed(reason)
                 updateActiveConnectionStatus()
+                showNotification(
+                    title: "Connection Failed",
+                    body: "\(tunnel.name): \(reason)"
+                )
                 return
             }
         }
@@ -337,7 +343,7 @@ class SSHTunnelManager: ObservableObject {
                         )
                         if !ok {
                             self.showNotification(
-                                title: "Connection failed",
+                                title: "Connection Failed",
                                 body: "Could not start local PAC server for \(tunnelName). Disconnecting."
                             )
                             self.disconnect(tunnelId)
@@ -347,7 +353,6 @@ class SSHTunnelManager: ObservableObject {
 
                     self.tunnels[idx].connectionState = .connected
                     self.updateActiveConnectionStatus()
-                    self.showNotification(title: "Connected", body: "Connected to \(self.tunnels[idx].name)")
                 }
             }
         }
@@ -370,15 +375,21 @@ class SSHTunnelManager: ObservableObject {
 
                 let wasConnected = self.tunnels[idx].isConnected
                 if wasConnected {
-                    // Normal disconnect (process exited after being fully up)
+                    // Unsolicited drop: ssh died while we still believed we were
+                    // connected. User-initiated disconnects set .disconnected
+                    // *before* terminating the process, so this branch only
+                    // fires for real drops (network change, server reboot,
+                    // sleep/wake, idle timeout). The user's proxied apps just
+                    // stopped working — they need to know.
+                    let tunnelName = self.tunnels[idx].name
                     self.tunnels[idx].connectionState = .disconnected
                     if proxyMode != .off {
                         // Clear both classic SOCKS and PAC autoproxy state defensively.
                         self.proxyManager.disableAllProxyConfig()
                     }
                     self.showNotification(
-                        title: "Disconnected",
-                        body: "Disconnected from \(self.tunnels[idx].name)"
+                        title: "Tunnel Dropped",
+                        body: "\(tunnelName) disconnected unexpectedly"
                     )
                 } else if case .connecting = self.tunnels[idx].connectionState {
                     // Process exited before we ever saw a successful handshake — this is
@@ -442,11 +453,8 @@ class SSHTunnelManager: ObservableObject {
             proxyManager.disableAllProxyConfig()
         }
 
-        if wasConnected {
-            showNotification(title: "Disconnected", body: "Disconnected from \(tunnel.name)")
-        }
     }
-    
+
     private func updateActiveConnectionStatus() {
         hasActiveConnections = tunnels.contains { $0.isConnected }
     }

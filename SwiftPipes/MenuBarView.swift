@@ -22,7 +22,7 @@ struct MenuBarView: View {
                                 if case .failed(let reason) = tunnel.connectionState {
                                     Text(reason)
                                         .font(.caption2)
-                                        .foregroundColor(.secondary)
+                                        .foregroundColor(.red)
                                         .lineLimit(2)
                                 } else if case .connecting = tunnel.connectionState {
                                     Text("Connecting…")
