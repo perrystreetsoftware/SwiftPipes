@@ -559,15 +559,36 @@ class SSHTunnelManager: ObservableObject {
     /// SwiftPipes-spawned tunnels with PPID==1 (reparented to launchd, i.e.
     /// their original SwiftPipes parent died) and SIGTERMs them. At launch
     /// every saved tunnel is `.disconnected`, so any matching ssh can only
-    /// be a leftover.
+    /// be a leftover. When orphans are actually found and killed, a
+    /// "Cleared leftover tunnel" notification fires so the user knows.
     private func sweepOrphanedSwiftPipesSshProcesses() {
-        DispatchQueue.global(qos: .utility).async {
+        DispatchQueue.global(qos: .utility).async { [weak self] in
             let orphans = Self.findOrphanedSwiftPipesSshPids()
             guard !orphans.isEmpty else { return }
             for pid in orphans {
                 _ = kill(pid_t(pid), SIGTERM)
             }
             print("SwiftPipes: cleaned \(orphans.count) orphaned ssh tunnel(s) at launch: \(orphans)")
+            DispatchQueue.main.async {
+                self?.showNotification(
+                    title: "Cleared leftover tunnel",
+                    body: Self.formatOrphanedSshSweepNotification(orphans)
+                )
+            }
+        }
+    }
+
+    /// Format the orphan-sweep notification body. Single orphan inline,
+    /// multiple orphans summarized with the PID list.
+    static func formatOrphanedSshSweepNotification(_ pids: [Int]) -> String {
+        switch pids.count {
+        case 0:
+            return ""
+        case 1:
+            return "Terminated ssh process from a previous session (PID \(pids[0]))"
+        default:
+            let list = pids.map(String.init).joined(separator: ", ")
+            return "Terminated \(pids.count) ssh processes from a previous session (PIDs \(list))"
         }
     }
 
@@ -584,11 +605,15 @@ class SSHTunnelManager: ObservableObject {
         process.standardError = Pipe()
         do {
             try process.run()
-            process.waitUntilExit()
         } catch {
             return []
         }
+        // Drain stdout BEFORE waitUntilExit: `ps -ax` output easily exceeds
+        // the default pipe buffer on a busy system, and ps would block on
+        // write while we block on wait → deadlock. Reading to EOF here keeps
+        // ps writing freely; ps closes its pipe when it exits.
         let data = outPipe.fileHandleForReading.readDataToEndOfFile()
+        process.waitUntilExit()
         guard let output = String(data: data, encoding: .utf8) else { return [] }
         var orphans: [Int] = []
         for rawLine in output.split(separator: "\n") {
