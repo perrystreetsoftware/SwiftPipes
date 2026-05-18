@@ -594,8 +594,22 @@ class SSHTunnelManager: ObservableObject {
 
     /// Enumerate processes via `ps -axwwo pid=,ppid=,command=` and return PIDs
     /// for processes whose argv matches the SwiftPipes-ssh signature AND whose
-    /// PPID is 1 (orphaned, reparented to launchd). Returning [] on any error
-    /// is fine — the sweep is best-effort.
+    /// PPID is 1.
+    ///
+    /// The PPID==1 check is deliberately stricter than the connect-time
+    /// `describePortHolder` matcher, which only requires the argv signature.
+    /// Rationale: the launch sweep acts silently (no modal, no confirmation),
+    /// so we need a hard signal that the process is genuinely an orphan.
+    /// `PPID == 1` is exactly that — the kernel only reparents to launchd
+    /// when the original parent has died, so any matching ssh with this PPID
+    /// can only be a leftover from a SwiftPipes session that didn't exit
+    /// cleanly. An argv-matching ssh with a live parent might be someone
+    /// else's child (user's shell, a wrapper script, a third-party tool); we
+    /// don't touch those at launch. They surface at connect-time via the
+    /// "Port held by previous SwiftPipes tunnel" NSAlert, where the user
+    /// gets the final say.
+    ///
+    /// Returning [] on any error is fine — the sweep is best-effort.
     static func findOrphanedSwiftPipesSshPids() -> [Int] {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/bin/ps")
