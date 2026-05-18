@@ -313,6 +313,51 @@ class NetworkProxyManager {
         return false
     }
 
+    /// One active proxy entry: which service is affected, what kind, and the
+    /// target (`host:port` for SOCKS, full URL for PAC).
+    struct ActiveProxy: Equatable {
+        let service: String
+        let kind: Kind
+        let target: String
+
+        enum Kind: String { case socks = "SOCKS", pac = "PAC" }
+    }
+
+    /// Read-only inventory of currently-active proxy configuration. Returns
+    /// one entry per (service, proxy-kind) pair. Empty when nothing is active.
+    /// The caller is expected to group / dedupe by target for display.
+    func inventoryActiveProxies() -> [ActiveProxy] {
+        var items: [ActiveProxy] = []
+        for service in getNetworkServices() {
+            if isSOCKSOn(service: service) {
+                let out = runReadOnly(args: ["-getsocksfirewallproxy", service])
+                let server = parseValue(out, key: "Server") ?? "?"
+                let port = parseValue(out, key: "Port") ?? "?"
+                items.append(.init(service: service, kind: .socks, target: "\(server):\(port)"))
+            }
+            if isAutoProxyOn(service: service) {
+                let out = runReadOnly(args: ["-getautoproxyurl", service])
+                let url = parseValue(out, key: "URL") ?? "?"
+                items.append(.init(service: service, kind: .pac, target: url))
+            }
+        }
+        return items
+    }
+
+    /// Parse `Key: value` out of `networksetup -get*` output. Returns nil if
+    /// the key isn't found.
+    private func parseValue(_ output: String, key: String) -> String? {
+        for line in output.split(separator: "\n") {
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            let prefix = "\(key):"
+            if trimmed.hasPrefix(prefix) {
+                return String(trimmed.dropFirst(prefix.count))
+                    .trimmingCharacters(in: .whitespaces)
+            }
+        }
+        return nil
+    }
+
     private func isSOCKSOn(service: String) -> Bool {
         return runReadOnly(args: ["-getsocksfirewallproxy", service])
             .contains("Enabled: Yes")

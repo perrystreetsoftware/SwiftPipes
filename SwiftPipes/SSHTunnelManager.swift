@@ -430,14 +430,44 @@ class SSHTunnelManager: ObservableObject {
     /// orphan from a previous crash / force-quit (all tunnels decode as
     /// .disconnected, so no live session could have put it there). Read checks
     /// don't need sudo; disable only runs if there's actually something to clean.
+    /// On clean, a "Cleared leftover proxy" notification with the inventory
+    /// is fired so the user knows what happened.
     private func sweepOrphanedSystemProxy() {
         DispatchQueue.global(qos: .utility).async { [weak self] in
             guard let self = self else { return }
-            if self.proxyManager.isAnyProxyActive() {
-                print("SwiftPipes: found orphaned system proxy at launch — clearing")
-                self.proxyManager.disableAllProxyConfig()
+            let inventory = self.proxyManager.inventoryActiveProxies()
+            guard !inventory.isEmpty else { return }
+            print("SwiftPipes: found orphaned system proxy at launch — clearing: \(inventory)")
+            self.proxyManager.disableAllProxyConfig()
+            DispatchQueue.main.async {
+                self.showNotification(
+                    title: "Cleared leftover proxy",
+                    body: Self.formatProxyInventoryForNotification(inventory)
+                )
             }
         }
+    }
+
+    /// Format the inventory into a notification body. Groups entries by
+    /// (kind, target) so we collapse cases like "the same PAC URL on all
+    /// 5 network services" into one line instead of five.
+    static func formatProxyInventoryForNotification(_ items: [NetworkProxyManager.ActiveProxy]) -> String {
+        guard !items.isEmpty else { return "" }
+        let groups = Dictionary(grouping: items) { "\($0.kind.rawValue)\t\($0.target)" }
+        var lines: [String] = []
+        for key in groups.keys.sorted() {
+            guard let group = groups[key], let first = group.first else { continue }
+            if group.count == 1 {
+                lines.append("\(first.service): \(first.kind.rawValue) → \(first.target)")
+            } else {
+                lines.append("\(first.kind.rawValue) → \(first.target) (on \(group.count) services)")
+            }
+        }
+        if lines.count <= 3 {
+            return lines.joined(separator: "\n")
+        }
+        let head = lines.prefix(2).joined(separator: "\n")
+        return "\(head)\n…and \(lines.count - 2) more"
     }
 
     /// Defensive proxy clear on failure paths. Gated on the read-only probe so
